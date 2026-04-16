@@ -1,0 +1,43 @@
+---
+layout: home
+
+hero:
+  name: "Agent 开发学习手册"
+  text: "从零到生产，一本书够了"
+  tagline: 面向前端工程师的 AI Agent 开发手册。用大白话讲清原理，用真实代码驱动学习，从第一行 Python 到部署生产级 Agent。
+  actions:
+    - theme: brand
+      text: 开始阅读 →
+      link: /01-python/
+    - theme: alt
+      text: 学习路线图
+      link: /roadmap
+    - theme: alt
+      text: 本书导读
+      link: /guide
+
+features:
+  - icon: 🐍
+    title: 第 1-4 章 · 基础能力
+    details: Python 快速上手、LLM 核心原理、Prompt Engineering、API 调用实战。每章从初级到高级递进，初级读完就能调 API 写简单应用。
+    link: /01-python/
+  - icon: 🤖
+    title: 第 5-8 章 · Agent 核心
+    details: Tool Use 工具调用、Agent 循环与设计模式、RAG 检索增强、记忆系统。掌握 Agent 开发的核心技能栈。
+    link: /05-tool-use/
+  - icon: 🏗️
+    title: 第 9-12 章 · 框架与生态
+    details: 主流框架（LangGraph/CrewAI）、Multi-Agent 协作、评估测试体系、MCP 协议开发。从框架使用者到框架理解者。
+    link: /09-frameworks/
+  - icon: 🚀
+    title: 第 13-16 章 · 生产与前沿
+    details: 安全攻防、生产工程化、性能优化、前沿方向（Computer Use/Code Agent）。具备生产部署和架构设计能力。
+    link: /13-security/
+---
+
+<style>
+:root {
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: -webkit-linear-gradient(120deg, #bd34fe 30%, #41d1ff);
+}
+</style>
