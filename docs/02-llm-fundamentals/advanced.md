@@ -12,9 +12,17 @@
 
 ## 用 numpy 手写注意力
 
-把中级篇的公式变成完整的可运行代码，从头实现一个简化版 Transformer 的前向传播。
+::: tip 为什么要手写这些代码？
+不是为了让你在生产中用 -- PyTorch 一行 `nn.MultiheadAttention` 就能搞定。手写的目的是帮你建立三个工程直觉：
 
-### 完整的自注意力层
+1. **为什么注意力是 O(n^2) 的** -- 看到 `Q @ K.T` 生成 `(seq_len, seq_len)` 矩阵的那一刻，你就明白长上下文为什么烧显存
+2. **为什么多头比单头好** -- 单头只能学一种关注模式，多头让模型同时关注语法、语义、位置等不同维度
+3. **为什么 Transformer 可以并行训练** -- 不像 RNN 必须串行，注意力对所有位置的计算是一次矩阵乘法完成的
+:::
+
+下面我们从最小的自注意力开始，逐步搭建到完整的 Transformer Block。
+
+### 第一步：单头自注意力 -- 理解 O(n^2) 的根源
 
 ```python
 import numpy as np
@@ -91,7 +99,13 @@ print("\n因果注意力权重（每行只能看到自己和左边）:")
 print(weights_causal.round(3))
 ```
 
-### 完整的多头注意力
+> **工程直觉**：注意第 48 行 `Q @ K.T` -- 这一步生成了 `(seq_len, seq_len)` 的矩阵，这就是注意力 O(n^2) 复杂度的根源。序列长度从 4K 翻倍到 8K，这个矩阵的大小翻 4 倍。当你看到某个模型宣称支持 200K 上下文时，你应该立刻想到：它一定用了某种方式绕过了这个 N^2 瓶颈（比如后面要讲的 Flash Attention）。
+
+### 第二步：多头注意力 -- 单头的局限是什么？
+
+上面的单头注意力有一个根本问题：**一组 Q/K/V 权重只能学到一种关注模式**。比如它可能学会了关注"最近的几个词"，但同时就没法关注"句子开头的主语"。
+
+多头注意力的解决方案很直接：并行运行多个独立的注意力头，每个头学习不同的关注模式，最后把结果拼起来。
 
 ```python
 import numpy as np
@@ -138,7 +152,14 @@ print(f"输出形状: {output.shape}")
 print(f"输出前两个 Token 的前 4 维:\n{output[:2, :4].round(3)}")
 ```
 
-### 简化版 Transformer Block
+> **工程直觉**：注意每个头独立计算、互不依赖（第 118-120 行的循环），这意味着多头在 GPU 上可以完全并行。实际模型不会用 for 循环，而是把多头 reshape 成一个大的 batch 矩阵乘法一次算完。另外，`d_model // num_heads` 这个设计很精妙 -- 多头不增加总计算量，只是把同样的维度切分给不同的头，让每个头专注于子空间。
+
+### 第三步：完整的 Transformer Block -- 光有注意力够吗？
+
+注意力层只解决了"Token 之间怎么交互信息"的问题，但还缺两样东西：
+
+- **前馈网络（FFN）**：注意力是线性加权求和，表达能力有限。FFN 提供逐位置的非线性变换，让模型有能力做更复杂的特征提取。你可以理解为：注意力负责"看哪里"，FFN 负责"看到之后怎么想"。
+- **残差连接 + LayerNorm**：没有残差连接，深层网络的梯度会消失，训练不动。LayerNorm 让每一层的输入分布稳定，加速收敛。
 
 ```python
 import numpy as np
@@ -192,6 +213,8 @@ h = block2.forward(h, mask)
 print(f"两层 Transformer 输出形状: {h.shape}")
 print(f"最后一个 Token 的表示（前 8 维）: {h[-1, :8].round(3)}")
 ```
+
+> **工程直觉**：现在你看到了一个完整 Transformer Block 的全貌 -- 注意力 + FFN + 残差 + LayerNorm。真实的 LLM（如 Llama 3 70B）就是把这个结构堆叠 80 层。理解这个结构后，你在看模型架构图、推理优化文档时就不会犯怵了：所有优化（KV Cache、量化、Flash Attention）都是在这个基本结构上做文章。
 
 ## KV Cache 优化
 
@@ -287,71 +310,54 @@ KV Cache 用空间换时间。对于长上下文（如 200K Token），Cache 占
 
 ## Flash Attention 简介
 
-标准注意力的问题是需要存储完整的 `(seq_len, seq_len)` 注意力矩阵。当序列长度 N=100K 时，这个矩阵有 100 亿个元素，GPU 显存根本放不下。
+### 标准注意力为什么慢？
 
-Flash Attention 的核心思想是**分块计算**：不存储完整的注意力矩阵，而是分块计算，每块算完就丢弃中间结果。
+问题不在计算量，而在**显存搬运**。标准注意力需要把完整的 `(N, N)` 注意力矩阵写入 GPU 的主显存（HBM），然后再读出来做 softmax。当 N=100K 时，这个矩阵有 100 亿个元素 -- 光是搬运数据就成了瓶颈。GPU 的计算单元大部分时间在等数据，而不是在算数。
+
+### Flash Attention 的核心洞察
+
+两个关键想法：
+
+1. **分块计算**：不生成完整的 N*N 矩阵，而是把 Q/K/V 切成小块。每次只在 GPU 的高速缓存（SRAM，比 HBM 快 10 倍以上）中计算一小块注意力，算完就丢弃中间结果。
+2. **在线 softmax**：分块后没法一次看到所有分数来做 softmax。Flash Attention 用一个巧妙的数学技巧，在遍历每个块的过程中**增量更新** softmax 的分母，最终结果与标准注意力完全一致（不是近似）。
 
 ```python
-import numpy as np
+# 伪代码：Flash Attention 的核心逻辑
+# （真实实现是 CUDA kernel，这里只展示思路）
 
-def standard_attention(Q, K, V):
-    """标准注意力 -- 需要 O(N^2) 显存"""
-    N = Q.shape[0]
-    # 这里创建了 N*N 的矩阵，显存 O(N^2)
-    scores = Q @ K.T / np.sqrt(Q.shape[-1])
-    weights = np.exp(scores) / np.exp(scores).sum(axis=-1, keepdims=True)
-    return weights @ V
+def flash_attention(Q, K, V, block_size):
+    output = zeros(N, d)
+    row_max = full(N, -inf)    # 在线 softmax: 跟踪每行的最大值
+    row_sum = zeros(N)          # 在线 softmax: 跟踪每行的指数和
 
-def flash_attention_simplified(Q, K, V, block_size: int = 2):
-    """Flash Attention 的简化演示（仅展示思想，非真实实现）"""
-    N = Q.shape[0]
-    d = Q.shape[-1]
-    output = np.zeros_like(V)
-    row_max = np.full(N, -np.inf)
-    row_sum = np.zeros(N)
-
-    # 分块处理 -- 每次只加载一小块到"快速显存"
-    for j_start in range(0, N, block_size):
-        j_end = min(j_start + block_size, N)
-
-        # 只计算一小块的注意力分数
-        K_block = K[j_start:j_end]
-        V_block = V[j_start:j_end]
-
-        scores_block = Q @ K_block.T / np.sqrt(d)  # (N, block_size)
-
-        # 在线 softmax 更新（数值稳定版）
-        block_max = scores_block.max(axis=-1)
-        new_max = np.maximum(row_max, block_max)
-
-        # 用新的 max 修正之前的累积和
-        old_scale = np.exp(row_max - new_max)
-        new_scale = np.exp(block_max - new_max)
-
-        exp_scores = np.exp(scores_block - block_max[:, np.newaxis])
-        block_sum = exp_scores.sum(axis=-1)
-
-        # 更新输出（在线 softmax：累积未归一化的加权和，最后再除以总和）
-        output = output * old_scale[:, np.newaxis] + exp_scores @ V_block
-
-        # 更新统计量
+    for block in split(K, V, block_size):       # 分块遍历 K, V
+        scores = Q @ block.K.T / sqrt(d)        # 只在 SRAM 中计算小块
+        # 在线更新 softmax 统计量（增量式，不需要全局信息）
+        new_max = max(row_max, scores.max())
+        old_scale = exp(row_max - new_max)       # 修正之前累积的结果
+        exp_scores = exp(scores - new_max)
+        output = output * old_scale + exp_scores @ block.V
+        row_sum = row_sum * old_scale + exp_scores.sum()
         row_max = new_max
-        row_sum = row_sum * old_scale + block_sum
 
-    # 最终归一化
-    return output / row_sum[:, np.newaxis]
-
-# 关键对比
-N = 1000
-print(f"序列长度 N = {N}")
-print(f"标准注意力显存: O(N^2) = {N*N:,} 个浮点数")
-print(f"Flash Attention 显存: O(N) = {N:,} 个浮点数")
-print(f"显存节省: {(1 - N/(N*N))*100:.1f}%")
+    return output / row_sum                      # 最终归一化
 ```
 
-::: warning 关于 Flash Attention
-上面的代码是概念演示。真正的 Flash Attention 是用 CUDA 写的 GPU kernel，利用了 GPU 内存层次（SRAM vs HBM）的速度差异。你不需要自己实现它 -- PyTorch 和推理引擎已经内置了。理解原理就够了。
-:::
+**显存对比**：
+
+| | 标准注意力 | Flash Attention |
+|---|---|---|
+| 显存占用 | O(N^2) -- 存完整注意力矩阵 | O(N) -- 只存分块的中间结果 |
+| N=100K 时 | ~40GB（放不下） | ~400KB（轻松放入 SRAM） |
+| 计算结果 | 精确 | 精确（不是近似） |
+
+### 对你的实际影响
+
+你不需要实现 Flash Attention -- PyTorch 2.0+ 和所有主流推理引擎（vLLM、TGI、llama.cpp）都已内置。但你需要关注：
+
+- **选模型/引擎时**：确认是否支持 Flash Attention（或其变体 Flash Attention 2/3），这直接决定了能处理多长的上下文
+- **遇到 OOM 时**：如果长文本推理爆显存，首先检查是否启用了 Flash Attention，而不是盲目加显卡
+- **理解上下文长度的成本**：即使有 Flash Attention，计算量仍然是 O(N^2)，只是显存从 O(N^2) 降到了 O(N)。200K 上下文仍然比 4K 慢很多
 
 ## 模型量化
 
@@ -398,6 +404,17 @@ print(f"存储节省: FP32={original.nbytes}B -> INT8={quantized.nbytes}B ({quan
 ```
 
 ### 量化方案对比
+
+先说结论 -- 根据你的场景直接选：
+
+::: tip 量化方案速查
+- **在 Mac M2/M3 16GB 上跑本地模型**：选 GGUF Q4_K_M，用 Ollama 一键运行，7B 模型只需 ~4GB 内存
+- **有云端 GPU（如 A100），想省点显存多留给上下文**：选 INT8（GPTQ），质量损失极小，显存砍半
+- **只有 8GB 消费级显卡（如 RTX 4060），想跑 7B 模型**：选 INT4（GPTQ/AWQ），3.5GB 刚好塞得下
+- **什么都不想管，只想用好模型**：直接用 API（Claude / GPT），量化是别人的事
+:::
+
+下面是完整的方案对比，帮你理解各选项的 trade-off：
 
 ```python
 # 主要量化方案

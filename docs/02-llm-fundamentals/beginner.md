@@ -144,86 +144,56 @@ console.log(estimateCost(longDoc, 1000));
 
 ## 主流模型对比
 
-### Claude（Anthropic）
+### 先解决一个问题：模型那么多，我该怎么选？
+
+初学者面对模型选择时最常见的困境是：列表看了一大堆，每个都说自己好，然后陷入"选择焦虑"。
+
+其实 90% 的场景只需要回答**一个问题**：
 
 ```
-Claude Opus 4   -> 最强推理，复杂任务首选，价格最高
-Claude Sonnet 4 -> 能力与速度平衡，日常开发推荐
-Claude Haiku 3.5 -> 最快速度，简单任务和高并发场景
+你的数据能不能发到外部 API？
+├── 不能 → 开源模型本地部署（Llama / DeepSeek / Qwen）
+└── 能 → 你的任务有多复杂？
+    ├── 复杂推理/编程 → Claude Opus 4 或 o3
+    ├── 简单分类/提取/高并发 → Claude Haiku 3.5 或 GPT-4o-mini
+    └── 日常开发/原型期 → Claude Sonnet 4 或 GPT-4o（先跑通再说）
 ```
 
-特点：
-- 长上下文能力强（200K Token）
-- 对指令遵循度高，适合 Agent 场景
-- 支持 Tool Use（工具调用）
-- 擅长代码生成和分析
-
-### GPT（OpenAI）
-
-```
-GPT-4o       -> 多模态旗舰，综合能力强
-GPT-4o-mini  -> 性价比高，适合轻量任务
-o1 / o3      -> 推理增强模型，复杂逻辑首选
-```
-
-特点：
-- 生态最成熟，兼容接口最广
-- 多模态能力（图片、音频、视频）
-- o1/o3 在数学和编程推理上表现突出
-- JSON Mode 和结构化输出支持好
-
-### 开源模型
-
-```
-Llama 3      -> Meta 出品，综合能力强
-DeepSeek V3  -> 国产精品，性价比极高
-Qwen 2.5     -> 阿里出品，中文能力强
-Mistral      -> 法国团队，欧洲生态
-```
-
-特点：
-- 可本地部署，数据不出域
-- 成本可控（自有 GPU 或便宜的云 GPU）
-- 可微调适配特定领域
-- 很多兼容 OpenAI 接口格式
-
-### 怎么选
-
-```typescript
-// 模型选择决策树（伪代码）
-interface Task {
-  needsBestReasoning: boolean;
-  isSimple: boolean;
-  needsLowLatency: boolean;
-  dataCannotLeaveServer: boolean;
-  needsMultimodal: boolean;
-}
-
-function chooseModel(task: Task): string {
-  if (task.needsBestReasoning) {
-    return "claude-opus-4 或 o3";
-  }
-
-  if (task.isSimple && task.needsLowLatency) {
-    return "claude-haiku-3.5 或 gpt-4o-mini";
-  }
-
-  if (task.dataCannotLeaveServer) {
-    return "开源模型（Llama/DeepSeek）本地部署";
-  }
-
-  if (task.needsMultimodal) {
-    return "gpt-4o 或 claude-sonnet-4";
-  }
-
-  // 默认推荐
-  return "claude-sonnet-4（综合最优）";
-}
-```
-
-::: tip 实用建议
-开发阶段用 Claude Sonnet 或 GPT-4o（能力强、方便调试），上线后根据成本和性能要求选择更合适的模型。别一上来就纠结模型选择 -- 先把功能跑通，再优化。
+::: tip 作为初学者，你现在只需要记住这一点
+**开发阶段直接用 Claude Sonnet 或 GPT-4o**。它们能力够强、价格适中、调试方便。等你的应用跑通了，再根据成本和性能需求换模型。别在起步阶段纠结选型 -- 模型随时可以换，但迟迟不动手写代码才是最大的浪费。
 :::
+
+### 三大阵营一览
+
+有了选择锚点后，再简单了解一下各家模型的核心差异：
+
+**Claude（Anthropic）** -- 指令遵循度高，Agent 场景首选
+
+```
+Opus 4   -> 最强推理，复杂任务      （贵）
+Sonnet 4 -> 能力与速度平衡          （日常推荐）
+Haiku 3.5 -> 最快，简单任务和高并发  （便宜）
+```
+
+核心优势：200K 长上下文、工具调用（Tool Use）能力强、代码生成质量高。
+
+**GPT（OpenAI）** -- 生态最成熟，兼容性最广
+
+```
+GPT-4o      -> 多模态旗舰
+GPT-4o-mini -> 轻量性价比
+o1 / o3     -> 推理增强，数学/编程突出
+```
+
+核心优势：第三方工具兼容性最好、多模态能力（图片/音频/视频）、结构化输出支持成熟。
+
+**开源模型** -- 数据不出域，成本可控
+
+```
+Llama 3 / DeepSeek V3 / Qwen 2.5 / Mistral
+```
+
+核心优势：本地部署数据安全、可微调适配垂直领域、大多兼容 OpenAI 接口格式。
 
 ## 幻觉问题
 
@@ -314,7 +284,21 @@ console.log((response.content[0] as { type: "text"; text: string }).text);
 
 ## 模型的核心参数
 
-在调用 LLM API 时，有几个关键参数直接影响输出质量：
+### 初学者最常踩的两个坑
+
+在讲参数之前，先看两个真实的"翻车现场"——几乎每个初学者都会遇到：
+
+**坑 1：回复莫名其妙被截断了**
+
+你让模型写一篇技术总结，结果写到一半戛然而止，末尾甚至停在半句话中间。这不是模型"偷懒"，而是 `max_tokens` 设小了。模型生成到 token 上限就会强制停止，不管句子有没有写完。
+
+**坑 2：模型开始胡言乱语**
+
+你让模型提取 JSON 数据，结果它返回了格式混乱、字段名乱编的内容。这往往是因为 `temperature` 设得太高。高 temperature 意味着高随机性——对创意写作是好事，但对需要精确输出的任务是灾难。
+
+### 两个关键参数
+
+理解了上面的坑，参数就很好懂了：
 
 ```typescript
 import Anthropic from "@anthropic-ai/sdk";
@@ -322,8 +306,8 @@ import Anthropic from "@anthropic-ai/sdk";
 const client = new Anthropic();
 
 // max_tokens: 最大输出长度
-// 设太小 -> 回复被截断
-// 设太大 -> 浪费（不影响质量，但预留了不必要的空间）
+// 设太小 -> 回复被截断（最常见的新手问题！）
+// 设太大 -> 不影响质量，但预留了不必要的空间
 const response1 = await client.messages.create({
   model: "claude-sonnet-4-20250514",
   max_tokens: 100, // 短回复
@@ -331,9 +315,9 @@ const response1 = await client.messages.create({
 });
 
 // temperature: 随机性（0-1）
-// 0 -> 最确定，每次结果几乎一样，适合分类、提取等确定性任务
+// 0 -> 最确定，每次结果几乎一样，适合分类、提取、JSON 输出
 // 0.7 -> 适度随机，适合创意写作、对话
-// 1.0 -> 高随机，适合头脑风暴
+// 1.0 -> 高随机，适合头脑风暴（但精确任务千万别用！）
 
 // 确定性任务用低 temperature
 const response2 = await client.messages.create({
@@ -353,6 +337,20 @@ const response3 = await client.messages.create({
 });
 console.log(`创意性: ${(response3.content[0] as { type: "text"; text: string }).text}`);
 ```
+
+### 你的第一个参数配置建议
+
+如果你刚开始接触 LLM API，不确定参数怎么填，用这个"安全默认值"起步：
+
+```typescript
+{
+  model: "claude-sonnet-4-20250514",
+  max_tokens: 1024,    // 足够大多数场景，不会被截断
+  temperature: 0,      // 先求稳，需要创意时再调高
+}
+```
+
+**工程直觉**：`temperature` 的默认策略是"先 0 后调"。开发阶段一律用 0，确保输出稳定可调试；等功能跑通后，只对明确需要多样性的场景（创意文案、头脑风暴）再逐步上调到 0.7-0.9。大多数 Agent 和工具调用场景，temperature 始终应该保持为 0。
 
 ## 小结
 
