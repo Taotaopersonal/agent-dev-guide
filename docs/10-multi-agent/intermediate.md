@@ -24,88 +24,104 @@
 
 Agent 之间直接发送和接收消息，就像发微信一样——有明确的发送者和接收者。
 
-```python
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Callable
-import anthropic
+```typescript
+import Anthropic from "@anthropic-ai/sdk";
 
-client = anthropic.Anthropic()
+const client = new Anthropic();
 
-@dataclass
-class Message:
-    """Agent 间通信的消息"""
-    sender: str
-    receiver: str
-    content: str
-    msg_type: str = "text"  # text, request, response, broadcast
-    timestamp: datetime = field(default_factory=datetime.now)
+/** Agent 间通信的消息 */
+interface Message {
+  sender: string;
+  receiver: string;
+  content: string;
+  msgType: string; // "text" | "request" | "response" | "broadcast"
+  timestamp: Date;
+}
 
-class MessageBus:
-    """消息总线：Agent 间通信的中介
+function createMessage(
+  sender: string,
+  receiver: string,
+  content: string,
+  msgType: string = "text"
+): Message {
+  return { sender, receiver, content, msgType, timestamp: new Date() };
+}
 
-    所有 Agent 都注册到消息总线上，
-    通过总线发送消息给指定 Agent。
-    """
+type MessageHandler = (msg: Message) => string | Promise<string>;
 
-    def __init__(self):
-        self.agents: dict[str, Callable] = {}
-        self.message_log: list[Message] = []
+/**
+ * 消息总线：Agent 间通信的中介
+ *
+ * 所有 Agent 都注册到消息总线上，
+ * 通过总线发送消息给指定 Agent。
+ */
+class MessageBus {
+  private agents: Record<string, MessageHandler> = {};
+  private messageLog: Message[] = [];
 
-    def register(self, name: str, handler: Callable):
-        """注册一个 Agent 的消息处理函数"""
-        self.agents[name] = handler
+  /** 注册一个 Agent 的消息处理函数 */
+  register(name: string, handler: MessageHandler): void {
+    this.agents[name] = handler;
+  }
 
-    def send(self, msg: Message) -> str:
-        """发送消息并获取回复"""
-        self.message_log.append(msg)
-        if msg.receiver in self.agents:
-            response = self.agents[msg.receiver](msg)
-            return response
-        return f"Agent '{msg.receiver}' 未找到"
+  /** 发送消息并获取回复 */
+  async send(msg: Message): Promise<string> {
+    this.messageLog.push(msg);
+    if (msg.receiver in this.agents) {
+      const response = await this.agents[msg.receiver](msg);
+      return response;
+    }
+    return `Agent '${msg.receiver}' 未找到`;
+  }
 
-    def broadcast(self, sender: str, content: str) -> dict[str, str]:
-        """广播消息给所有 Agent"""
-        responses = {}
-        for name, handler in self.agents.items():
-            if name != sender:
-                msg = Message(sender=sender, receiver=name,
-                            content=content, msg_type="broadcast")
-                responses[name] = handler(msg)
-        return responses
+  /** 广播消息给所有 Agent */
+  async broadcast(
+    sender: string,
+    content: string
+  ): Promise<Record<string, string>> {
+    const responses: Record<string, string> = {};
+    for (const [name, handler] of Object.entries(this.agents)) {
+      if (name !== sender) {
+        const msg = createMessage(sender, name, content, "broadcast");
+        responses[name] = await handler(msg);
+      }
+    }
+    return responses;
+  }
+}
 
+// 创建 Agent 处理函数
+function createAgentHandler(name: string, role: string): MessageHandler {
+  return async (msg: Message): Promise<string> => {
+    const response = await client.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 512,
+      system: `你是${role}。`,
+      messages: [
+        { role: "user", content: `[来自${msg.sender}]: ${msg.content}` },
+      ],
+    });
+    return response.content[0].type === "text" ? response.content[0].text : "";
+  };
+}
 
-# 创建 Agent 处理函数
-def create_agent_handler(name: str, role: str):
-    def handler(msg: Message) -> str:
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=512,
-            system=f"你是{role}。",
-            messages=[{"role": "user",
-                       "content": f"[来自{msg.sender}]: {msg.content}"}]
-        )
-        return response.content[0].text
-    return handler
+// 使用示例
+const bus = new MessageBus();
+bus.register("researcher", createAgentHandler("researcher", "技术研究员"));
+bus.register("reviewer", createAgentHandler("reviewer", "审核专家"));
 
+// Agent 之间通过总线通信
+const researchResult = await bus.send(
+  createMessage("manager", "researcher", "调研 RAG 技术的最新进展")
+);
 
-# 使用示例
-bus = MessageBus()
-bus.register("researcher", create_agent_handler("researcher", "技术研究员"))
-bus.register("reviewer", create_agent_handler("reviewer", "审核专家"))
-
-# Agent 之间通过总线通信
-research_result = bus.send(Message(
-    sender="manager",
-    receiver="researcher",
-    content="调研 RAG 技术的最新进展",
-))
-
-review_result = bus.send(Message(
-    sender="manager",
-    receiver="reviewer",
-    content=f"请审核以下研究结果：\n{research_result}",
-))
+const reviewResult = await bus.send(
+  createMessage(
+    "manager",
+    "reviewer",
+    `请审核以下研究结果：\n${researchResult}`
+  )
+);
 ```
 
 ### 共享状态（Blackboard）模式
@@ -114,139 +130,165 @@ review_result = bus.send(Message(
 
 这种模式特别适合多个 Agent 需要基于相同上下文协作的场景——比如协同写文档、多步骤分析。
 
-```python
-from threading import Lock
-from typing import Any
+```typescript
+/**
+ * 共享黑板：多 Agent 的公共数据空间
+ *
+ * 类似团队的共享白板：每个人都可以在上面写东西，
+ * 其他人随时能看到最新内容。
+ */
+class Blackboard {
+  private data: Record<string, unknown> = {};
+  private history: {
+    action: string;
+    key: string;
+    author: string;
+    timestamp: string;
+  }[] = [];
 
-class Blackboard:
-    """共享黑板：多 Agent 的公共数据空间
+  /** 写入数据 */
+  write(key: string, value: unknown, author: string): void {
+    this.data[key] = value;
+    this.history.push({
+      action: "write",
+      key,
+      author,
+      timestamp: new Date().toISOString(),
+    });
+  }
 
-    类似团队的共享白板：每个人都可以在上面写东西，
-    其他人随时能看到最新内容。
-    """
+  /** 读取数据 */
+  read(key: string, defaultValue: unknown = null): unknown {
+    return this.data[key] ?? defaultValue;
+  }
 
-    def __init__(self):
-        self._data: dict[str, Any] = {}
-        self._history: list[dict] = []
-        self._lock = Lock()
+  /** 读取所有数据 */
+  readAll(): Record<string, unknown> {
+    return { ...this.data };
+  }
+}
 
-    def write(self, key: str, value: Any, author: str):
-        """写入数据"""
-        with self._lock:
-            self._data[key] = value
-            self._history.append({
-                "action": "write",
-                "key": key,
-                "author": author,
-                "timestamp": datetime.now().isoformat(),
-            })
+/** 基于黑板的 Agent */
+class BlackboardAgent {
+  constructor(
+    private name: string,
+    private role: string,
+    private board: Blackboard
+  ) {}
 
-    def read(self, key: str, default: Any = None) -> Any:
-        """读取数据"""
-        return self._data.get(key, default)
+  /** 读取黑板信息，执行任务，将结果写回黑板 */
+  async thinkAndAct(task: string): Promise<string> {
+    // 读取黑板上的所有信息作为上下文
+    const context = this.board.readAll();
+    const contextStr = Object.entries(context)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join("\n");
 
-    def read_all(self) -> dict:
-        """读取所有数据"""
-        return self._data.copy()
+    const response = await client.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1024,
+      system: `你是${this.role}。参考黑板上的已有信息完成任务。`,
+      messages: [
+        {
+          role: "user",
+          content: `黑板信息：\n${contextStr}\n\n任务：${task}`,
+        },
+      ],
+    });
+    const result =
+      response.content[0].type === "text" ? response.content[0].text : "";
 
+    // 写回黑板，其他 Agent 就能看到了
+    this.board.write(`${this.name}_output`, result, this.name);
+    return result;
+  }
+}
 
-class BlackboardAgent:
-    """基于黑板的 Agent"""
+// 使用示例
+const board = new Blackboard();
 
-    def __init__(self, name: str, role: str, blackboard: Blackboard):
-        self.name = name
-        self.role = role
-        self.board = blackboard
+const researcher = new BlackboardAgent("researcher", "研究员", board);
+const analyst = new BlackboardAgent("analyst", "分析师", board);
+const writer = new BlackboardAgent("writer", "写手", board);
 
-    def think_and_act(self, task: str) -> str:
-        """读取黑板信息，执行任务，将结果写回黑板"""
-        # 读取黑板上的所有信息作为上下文
-        context = self.board.read_all()
-        context_str = "\n".join([f"{k}: {v}" for k, v in context.items()])
+// 多 Agent 通过黑板协作——每个 Agent 都能看到前面 Agent 的输出
+board.write("task", "分析 AI Agent 市场趋势", "manager");
+await researcher.thinkAndAct("收集市场数据和研究报告");
+await analyst.thinkAndAct("分析研究员收集的数据，提取关键趋势");
+await writer.thinkAndAct("基于分析结果撰写简报");
 
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1024,
-            system=f"你是{self.role}。参考黑板上的已有信息完成任务。",
-            messages=[{
-                "role": "user",
-                "content": f"黑板信息：\n{context_str}\n\n任务：{task}"
-            }]
-        )
-        result = response.content[0].text
-
-        # 写回黑板，其他 Agent 就能看到了
-        self.board.write(f"{self.name}_output", result, self.name)
-        return result
-
-
-# 使用示例
-board = Blackboard()
-
-researcher = BlackboardAgent("researcher", "研究员", board)
-analyst = BlackboardAgent("analyst", "分析师", board)
-writer = BlackboardAgent("writer", "写手", board)
-
-# 多 Agent 通过黑板协作——每个 Agent 都能看到前面 Agent 的输出
-board.write("task", "分析 AI Agent 市场趋势", "manager")
-researcher.think_and_act("收集市场数据和研究报告")
-analyst.think_and_act("分析研究员收集的数据，提取关键趋势")
-writer.think_and_act("基于分析结果撰写简报")
-
-print(board.read("writer_output"))
+console.log(board.read("writer_output"));
 ```
 
 ### 事件驱动通信
 
 Agent 发布事件，其他感兴趣的 Agent 订阅并响应。这是最松耦合的模式——发布者不需要知道谁在监听。
 
-```python
-class EventBus:
-    """事件总线：发布-订阅模式"""
+```typescript
+interface Event {
+  type: string;
+  data: Record<string, unknown>;
+  source: string;
+  timestamp: string;
+}
 
-    def __init__(self):
-        self.subscribers: dict[str, list[Callable]] = {}
-        self.event_log: list[dict] = []
+type EventHandler = (event: Event) => string | void;
 
-    def subscribe(self, event_type: str, handler: Callable):
-        """订阅某类事件"""
-        if event_type not in self.subscribers:
-            self.subscribers[event_type] = []
-        self.subscribers[event_type].append(handler)
+/** 事件总线：发布-订阅模式 */
+class EventBus {
+  private subscribers: Record<string, EventHandler[]> = {};
+  private eventLog: Event[] = [];
 
-    def publish(self, event_type: str, data: dict, source: str):
-        """发布事件，所有订阅者都会收到"""
-        event = {
-            "type": event_type,
-            "data": data,
-            "source": source,
-            "timestamp": datetime.now().isoformat(),
-        }
-        self.event_log.append(event)
+  /** 订阅某类事件 */
+  subscribe(eventType: string, handler: EventHandler): void {
+    if (!this.subscribers[eventType]) {
+      this.subscribers[eventType] = [];
+    }
+    this.subscribers[eventType].push(handler);
+  }
 
-        responses = []
-        for handler in self.subscribers.get(event_type, []):
-            result = handler(event)
-            if result:
-                responses.append(result)
-        return responses
+  /** 发布事件，所有订阅者都会收到 */
+  publish(
+    eventType: string,
+    data: Record<string, unknown>,
+    source: string
+  ): (string | void)[] {
+    const event: Event = {
+      type: eventType,
+      data,
+      source,
+      timestamp: new Date().toISOString(),
+    };
+    this.eventLog.push(event);
 
+    const responses: (string | void)[] = [];
+    for (const handler of this.subscribers[eventType] ?? []) {
+      const result = handler(event);
+      if (result) {
+        responses.push(result);
+      }
+    }
+    return responses;
+  }
+}
 
-# 使用示例
-event_bus = EventBus()
+// 使用示例
+const eventBus = new EventBus();
 
-def on_research_complete(event):
-    print(f"[Analyst] 收到研究完成事件，开始分析...")
-    return "分析结果: ..."
+function onResearchComplete(event: Event): string {
+  console.log(`[Analyst] 收到研究完成事件，开始分析...`);
+  return "分析结果: ...";
+}
 
-def on_research_complete_notify(event):
-    print(f"[Logger] 记录：研究已完成，来源: {event['source']}")
+function onResearchCompleteNotify(event: Event): void {
+  console.log(`[Logger] 记录：研究已完成，来源: ${event.source}`);
+}
 
-event_bus.subscribe("research_complete", on_research_complete)
-event_bus.subscribe("research_complete", on_research_complete_notify)
+eventBus.subscribe("research_complete", onResearchComplete);
+eventBus.subscribe("research_complete", onResearchCompleteNotify);
 
-# 研究员完成后发布事件，分析师和日志器都会响应
-event_bus.publish("research_complete", {"findings": "..."}, source="researcher")
+// 研究员完成后发布事件，分析师和日志器都会响应
+eventBus.publish("research_complete", { findings: "..." }, "researcher");
 ```
 
 ::: tip 通信模式选择
@@ -262,24 +304,34 @@ event_bus.publish("research_complete", {"findings": "..."}, source="researcher")
 
 ### 用 LLM 自动分解任务
 
-```python
-import json
+```typescript
+interface SubTaskDef {
+  id: number;
+  description: string;
+  agent: string;
+  dependencies: number[];
+  priority: "high" | "medium" | "low";
+}
 
-def decompose_task(task: str, available_agents: list[str]) -> list[dict]:
-    """将任务分解为子任务并分配给 Agent"""
-    agents_desc = "\n".join([f"- {a}" for a in available_agents])
+/** 将任务分解为子任务并分配给 Agent */
+async function decomposeTask(
+  task: string,
+  availableAgents: string[]
+): Promise<SubTaskDef[]> {
+  const agentsDesc = availableAgents.map((a) => `- ${a}`).join("\n");
 
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=1024,
-        messages=[{
-            "role": "user",
-            "content": f"""将以下任务分解为子任务，并分配给合适的 Agent。
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 1024,
+    messages: [
+      {
+        role: "user",
+        content: `将以下任务分解为子任务，并分配给合适的 Agent。
 
-任务：{task}
+任务：${task}
 
 可用 Agent：
-{agents_desc}
+${agentsDesc}
 
 要求：
 1. 每个子任务应该是独立可执行的
@@ -287,145 +339,217 @@ def decompose_task(task: str, available_agents: list[str]) -> list[dict]:
 3. 估计每个子任务的优先级
 
 返回 JSON：
-{{"subtasks": [
-  {{"id": 1, "description": "子任务描述", "agent": "Agent 名称",
-    "dependencies": [], "priority": "high/medium/low"}},
-]}}"""
-        }]
-    )
-    return json.loads(response.content[0].text)["subtasks"]
+{"subtasks": [
+  {"id": 1, "description": "子任务描述", "agent": "Agent 名称",
+    "dependencies": [], "priority": "high/medium/low"},
+]}`,
+      },
+    ],
+  });
+
+  const text =
+    response.content[0].type === "text" ? response.content[0].text : "{}";
+  return JSON.parse(text).subtasks;
+}
 ```
 
 ### 带依赖管理的任务调度器
 
 关键是处理子任务之间的依赖关系——任务 C 依赖任务 A 和 B 的结果，那 C 必须等 A 和 B 都完成才能开始。
 
-```python
-from dataclasses import dataclass, field
-from enum import Enum
+```typescript
+enum TaskStatus {
+  PENDING = "pending",
+  RUNNING = "running",
+  COMPLETED = "completed",
+  FAILED = "failed",
+}
 
-class TaskStatus(Enum):
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
+/** 子任务定义 */
+interface SubTask {
+  id: number;
+  description: string;
+  agent: string;
+  dependencies: number[];
+  priority: string;
+  status: TaskStatus;
+  result: string;
+}
 
-@dataclass
-class SubTask:
-    """子任务定义"""
-    id: int
-    description: str
-    agent: str
-    dependencies: list[int] = field(default_factory=list)
-    priority: str = "medium"
-    status: TaskStatus = TaskStatus.PENDING
-    result: str = ""
+function createSubTask(params: {
+  id: number;
+  description: string;
+  agent: string;
+  dependencies?: number[];
+  priority?: string;
+}): SubTask {
+  return {
+    ...params,
+    dependencies: params.dependencies ?? [],
+    priority: params.priority ?? "medium",
+    status: TaskStatus.PENDING,
+    result: "",
+  };
+}
 
-class TaskScheduler:
-    """任务调度器：管理子任务的依赖和执行顺序"""
+/** 任务调度器：管理子任务的依赖和执行顺序 */
+class TaskScheduler {
+  private tasks: Map<number, SubTask> = new Map();
+  private agentLoad: Record<string, number> = {};
 
-    def __init__(self):
-        self.tasks: dict[int, SubTask] = {}
-        self.agent_load: dict[str, int] = {}
+  /** 批量添加子任务 */
+  addTasks(
+    subtasks: {
+      id: number;
+      description: string;
+      agent: string;
+      dependencies?: number[];
+      priority?: string;
+    }[]
+  ): void {
+    for (const st of subtasks) {
+      const task = createSubTask(st);
+      this.tasks.set(task.id, task);
+      if (!(task.agent in this.agentLoad)) {
+        this.agentLoad[task.agent] = 0;
+      }
+    }
+  }
 
-    def add_tasks(self, subtasks: list[dict]):
-        """批量添加子任务"""
-        for st in subtasks:
-            task = SubTask(**st)
-            self.tasks[task.id] = task
-            self.agent_load.setdefault(task.agent, 0)
+  /** 获取可以立即执行的任务（所有依赖已满足） */
+  getReadyTasks(): SubTask[] {
+    const ready: SubTask[] = [];
+    for (const task of this.tasks.values()) {
+      if (task.status !== TaskStatus.PENDING) continue;
 
-    def get_ready_tasks(self) -> list[SubTask]:
-        """获取可以立即执行的任务（所有依赖已满足）"""
-        ready = []
-        for task in self.tasks.values():
-            if task.status != TaskStatus.PENDING:
-                continue
-            # 检查所有依赖是否已完成
-            deps_met = all(
-                self.tasks[dep_id].status == TaskStatus.COMPLETED
-                for dep_id in task.dependencies
-                if dep_id in self.tasks
-            )
-            if deps_met:
-                ready.append(task)
+      // 检查所有依赖是否已完成
+      const depsMet = task.dependencies.every((depId) => {
+        const dep = this.tasks.get(depId);
+        return !dep || dep.status === TaskStatus.COMPLETED;
+      });
 
-        # 按优先级排序
-        priority_order = {"high": 0, "medium": 1, "low": 2}
-        ready.sort(key=lambda t: priority_order.get(t.priority, 1))
-        return ready
+      if (depsMet) {
+        ready.push(task);
+      }
+    }
 
-    def execute_task(self, task: SubTask) -> str:
-        """执行单个任务"""
-        task.status = TaskStatus.RUNNING
-        self.agent_load[task.agent] += 1
+    // 按优先级排序
+    const priorityOrder: Record<string, number> = {
+      high: 0,
+      medium: 1,
+      low: 2,
+    };
+    ready.sort(
+      (a, b) =>
+        (priorityOrder[a.priority] ?? 1) - (priorityOrder[b.priority] ?? 1)
+    );
+    return ready;
+  }
 
-        try:
-            # 收集依赖任务的结果作为上下文
-            dep_context = ""
-            for dep_id in task.dependencies:
-                dep_task = self.tasks.get(dep_id)
-                if dep_task and dep_task.result:
-                    dep_context += f"\n[任务{dep_id}的结果]: {dep_task.result}"
+  /** 执行单个任务 */
+  async executeTask(task: SubTask): Promise<string> {
+    task.status = TaskStatus.RUNNING;
+    this.agentLoad[task.agent]++;
 
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=1024,
-                messages=[{
-                    "role": "user",
-                    "content": f"任务：{task.description}{dep_context}"
-                }]
-            )
-            task.result = response.content[0].text
-            task.status = TaskStatus.COMPLETED
-        except Exception as e:
-            task.status = TaskStatus.FAILED
-            task.result = f"错误: {e}"
-        finally:
-            self.agent_load[task.agent] -= 1
+    try {
+      // 收集依赖任务的结果作为上下文
+      let depContext = "";
+      for (const depId of task.dependencies) {
+        const depTask = this.tasks.get(depId);
+        if (depTask?.result) {
+          depContext += `\n[任务${depId}的结果]: ${depTask.result}`;
+        }
+      }
 
-        return task.result
+      const response = await client.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1024,
+        messages: [
+          {
+            role: "user",
+            content: `任务：${task.description}${depContext}`,
+          },
+        ],
+      });
+      task.result =
+        response.content[0].type === "text" ? response.content[0].text : "";
+      task.status = TaskStatus.COMPLETED;
+    } catch (e) {
+      task.status = TaskStatus.FAILED;
+      task.result = `错误: ${e}`;
+    } finally {
+      this.agentLoad[task.agent]--;
+    }
 
-    def run_all(self) -> dict[int, str]:
-        """执行所有任务（尊重依赖关系）"""
-        results = {}
-        max_iterations = len(self.tasks) * 2
+    return task.result;
+  }
 
-        for _ in range(max_iterations):
-            ready = self.get_ready_tasks()
-            if not ready:
-                all_done = all(
-                    t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED)
-                    for t in self.tasks.values()
-                )
-                if all_done:
-                    break
-                continue
+  /** 执行所有任务（尊重依赖关系） */
+  async runAll(): Promise<Record<number, string>> {
+    const results: Record<number, string> = {};
+    const maxIterations = this.tasks.size * 2;
 
-            for task in ready:
-                print(f"执行任务 {task.id}: {task.description[:50]}...")
-                result = self.execute_task(task)
-                results[task.id] = result
-                print(f"  -> 完成 (状态: {task.status.value})")
+    for (let i = 0; i < maxIterations; i++) {
+      const ready = this.getReadyTasks();
+      if (ready.length === 0) {
+        const allDone = [...this.tasks.values()].every(
+          (t) =>
+            t.status === TaskStatus.COMPLETED ||
+            t.status === TaskStatus.FAILED
+        );
+        if (allDone) break;
+        continue;
+      }
 
-        return results
+      for (const task of ready) {
+        console.log(
+          `执行任务 ${task.id}: ${task.description.slice(0, 50)}...`
+        );
+        const result = await this.executeTask(task);
+        results[task.id] = result;
+        console.log(`  -> 完成 (状态: ${task.status})`);
+      }
+    }
 
+    return results;
+  }
+}
 
-# 使用示例
-scheduler = TaskScheduler()
-scheduler.add_tasks([
-    {"id": 1, "description": "调研 RAG 技术的基本概念",
-     "agent": "researcher", "dependencies": [], "priority": "high"},
-    {"id": 2, "description": "调研 RAG 的最新进展",
-     "agent": "researcher", "dependencies": [], "priority": "high"},
-    {"id": 3, "description": "分析 RAG 的优缺点",
-     "agent": "analyst", "dependencies": [1, 2], "priority": "medium"},
-    {"id": 4, "description": "撰写技术报告",
-     "agent": "writer", "dependencies": [3], "priority": "low"},
-])
-results = scheduler.run_all()
-# 任务 1 和 2 没有依赖，可以先执行；
-# 任务 3 等 1+2 完成；任务 4 等 3 完成
+// 使用示例
+const scheduler = new TaskScheduler();
+scheduler.addTasks([
+  {
+    id: 1,
+    description: "调研 RAG 技术的基本概念",
+    agent: "researcher",
+    dependencies: [],
+    priority: "high",
+  },
+  {
+    id: 2,
+    description: "调研 RAG 的最新进展",
+    agent: "researcher",
+    dependencies: [],
+    priority: "high",
+  },
+  {
+    id: 3,
+    description: "分析 RAG 的优缺点",
+    agent: "analyst",
+    dependencies: [1, 2],
+    priority: "medium",
+  },
+  {
+    id: 4,
+    description: "撰写技术报告",
+    agent: "writer",
+    dependencies: [3],
+    priority: "low",
+  },
+]);
+const results = await scheduler.runAll();
+// 任务 1 和 2 没有依赖，可以先执行；
+// 任务 3 等 1+2 完成；任务 4 等 3 完成
 ```
 
 ::: warning 并行执行的注意事项
@@ -442,155 +566,207 @@ results = scheduler.run_all()
 
 最简单的共识方式：让多个 Agent 独立回答，取多数一致的答案。
 
-```python
-from collections import Counter
+```typescript
+interface Vote {
+  answer: string;
+  confidence: number;
+  reasoning: string;
+  agent_id: number;
+}
 
-class VotingConsensus:
-    """投票式共识机制"""
+interface ConsensusResult {
+  consensus_answer: string;
+  consensus_ratio: number;
+  avg_confidence: number;
+  is_unanimous: boolean;
+  all_votes: Vote[];
+}
 
-    def __init__(self, n_agents: int = 3):
-        self.n_agents = n_agents
+/** 投票式共识机制 */
+class VotingConsensus {
+  constructor(private nAgents: number = 3) {}
 
-    def get_votes(self, question: str,
-                  options: list[str] = None) -> list[dict]:
-        """让多个 Agent 独立投票"""
-        votes = []
-        for i in range(self.n_agents):
-            prompt = f"请回答以下问题。\n问题：{question}\n"
-            if options:
-                prompt += f"选项：{json.dumps(options, ensure_ascii=False)}\n"
-            prompt += '\n返回 JSON：{"answer": "你的答案", "confidence": 0.0-1.0, "reasoning": "推理过程"}'
+  /** 让多个 Agent 独立投票 */
+  async getVotes(
+    question: string,
+    options?: string[]
+  ): Promise<Vote[]> {
+    const votes: Vote[] = [];
+    for (let i = 0; i < this.nAgents; i++) {
+      let prompt = `请回答以下问题。\n问题：${question}\n`;
+      if (options) {
+        prompt += `选项：${JSON.stringify(options)}\n`;
+      }
+      prompt +=
+        '\n返回 JSON：{"answer": "你的答案", "confidence": 0.0-1.0, "reasoning": "推理过程"}';
 
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=512,
-                temperature=0.7,  # 稍高温度确保多样性
-                messages=[{"role": "user", "content": prompt}]
-            )
-            vote = json.loads(response.content[0].text)
-            vote["agent_id"] = i
-            votes.append(vote)
-        return votes
+      const response = await client.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 512,
+        temperature: 0.7, // 稍高温度确保多样性
+        messages: [{ role: "user", content: prompt }],
+      });
+      const text =
+        response.content[0].type === "text" ? response.content[0].text : "{}";
+      const vote: Vote = { ...JSON.parse(text), agent_id: i };
+      votes.push(vote);
+    }
+    return votes;
+  }
 
-    def reach_consensus(self, question: str,
-                        options: list[str] = None) -> dict:
-        """通过投票达成共识"""
-        votes = self.get_votes(question, options)
+  /** 通过投票达成共识 */
+  async reachConsensus(
+    question: string,
+    options?: string[]
+  ): Promise<ConsensusResult> {
+    const votes = await this.getVotes(question, options);
 
-        answers = [v["answer"] for v in votes]
-        counter = Counter(answers)
-        majority_answer, majority_count = counter.most_common(1)[0]
+    // 统计各答案的票数
+    const counter: Record<string, number> = {};
+    for (const v of votes) {
+      counter[v.answer] = (counter[v.answer] ?? 0) + 1;
+    }
 
-        consensus_ratio = majority_count / len(votes)
-        avg_confidence = sum(
-            v["confidence"] for v in votes if v["answer"] == majority_answer
-        ) / max(majority_count, 1)
+    // 找出得票最多的答案
+    const [majorityAnswer, majorityCount] = Object.entries(counter).sort(
+      (a, b) => b[1] - a[1]
+    )[0];
 
-        return {
-            "consensus_answer": majority_answer,
-            "consensus_ratio": consensus_ratio,
-            "avg_confidence": avg_confidence,
-            "is_unanimous": consensus_ratio == 1.0,
-            "all_votes": votes,
-        }
+    const consensusRatio = majorityCount / votes.length;
+    const matchingVotes = votes.filter((v) => v.answer === majorityAnswer);
+    const avgConfidence =
+      matchingVotes.reduce((sum, v) => sum + v.confidence, 0) /
+      Math.max(matchingVotes.length, 1);
 
+    return {
+      consensus_answer: majorityAnswer,
+      consensus_ratio: consensusRatio,
+      avg_confidence: avgConfidence,
+      is_unanimous: consensusRatio === 1.0,
+      all_votes: votes,
+    };
+  }
+}
 
-# 使用
-voter = VotingConsensus(n_agents=5)
-result = voter.reach_consensus(
-    "Python 和 JavaScript 哪个更适合初学者？",
-    options=["Python", "JavaScript", "都适合"]
-)
-print(f"共识: {result['consensus_answer']} "
-      f"({result['consensus_ratio']*100:.0f}% 一致)")
+// 使用
+const voter = new VotingConsensus(5);
+const result = await voter.reachConsensus(
+  "Python 和 JavaScript 哪个更适合初学者？",
+  ["Python", "JavaScript", "都适合"]
+);
+console.log(
+  `共识: ${result.consensus_answer} ` +
+    `(${(result.consensus_ratio * 100).toFixed(0)}% 一致)`
+);
 ```
 
 ### 仲裁 Agent
 
 当投票无法达成明确共识时，引入一个独立的"仲裁者"来做最终判断。
 
-```python
-class ArbitrationConsensus:
-    """仲裁式共识：由裁判 Agent 做最终判断"""
+```typescript
+/** 仲裁式共识：由裁判 Agent 做最终判断 */
+class ArbitrationConsensus {
+  constructor(private nDebaters: number = 3) {}
 
-    def __init__(self, n_debaters: int = 3):
-        self.n_debaters = n_debaters
+  /** 收集各 Agent 的观点 */
+  async collectOpinions(
+    question: string
+  ): Promise<{ perspective: string; opinion: string }[]> {
+    const opinions: { perspective: string; opinion: string }[] = [];
+    const perspectives = ["乐观主义者", "谨慎分析师", "实用主义者"];
 
-    def collect_opinions(self, question: str) -> list[dict]:
-        """收集各 Agent 的观点"""
-        opinions = []
-        perspectives = ["乐观主义者", "谨慎分析师", "实用主义者"]
+    for (let i = 0; i < Math.min(this.nDebaters, perspectives.length); i++) {
+      const response = await client.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 512,
+        system: `你是一个${perspectives[i]}，请从你的角度分析问题。`,
+        messages: [{ role: "user", content: question }],
+      });
+      opinions.push({
+        perspective: perspectives[i],
+        opinion:
+          response.content[0].type === "text"
+            ? response.content[0].text
+            : "",
+      });
+    }
+    return opinions;
+  }
 
-        for i in range(min(self.n_debaters, len(perspectives))):
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=512,
-                system=f"你是一个{perspectives[i]}，请从你的角度分析问题。",
-                messages=[{"role": "user", "content": question}]
-            )
-            opinions.append({
-                "perspective": perspectives[i],
-                "opinion": response.content[0].text,
-            })
-        return opinions
+  /** 裁判做最终判断 */
+  async arbitrate(
+    question: string,
+    opinions: { perspective: string; opinion: string }[]
+  ): Promise<{
+    opinions: { perspective: string; opinion: string }[];
+    arbitration: string;
+  }> {
+    const opinionsText = opinions
+      .map((o) => `[${o.perspective}]:\n${o.opinion}`)
+      .join("\n\n");
 
-    def arbitrate(self, question: str, opinions: list[dict]) -> dict:
-        """裁判做最终判断"""
-        opinions_text = "\n\n".join([
-            f"[{o['perspective']}]:\n{o['opinion']}" for o in opinions
-        ])
+    const response = await client.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1024,
+      system: "你是一个公正的裁判。综合分析各方观点，给出客观的最终结论。",
+      messages: [
+        {
+          role: "user",
+          content:
+            `问题：${question}\n\n各方观点：\n${opinionsText}\n\n` +
+            `请：1. 分析各方优缺点 2. 指出共识和分歧 ` +
+            `3. 给出最终裁决 4. 说明理由`,
+        },
+      ],
+    });
+    return {
+      opinions,
+      arbitration:
+        response.content[0].type === "text" ? response.content[0].text : "",
+    };
+  }
 
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1024,
-            system="你是一个公正的裁判。综合分析各方观点，给出客观的最终结论。",
-            messages=[{
-                "role": "user",
-                "content": f"问题：{question}\n\n各方观点：\n{opinions_text}\n\n"
-                           f"请：1. 分析各方优缺点 2. 指出共识和分歧 "
-                           f"3. 给出最终裁决 4. 说明理由"
-            }]
-        )
-        return {
-            "opinions": opinions,
-            "arbitration": response.content[0].text,
-        }
-
-    def resolve(self, question: str) -> dict:
-        opinions = self.collect_opinions(question)
-        return self.arbitrate(question, opinions)
+  async resolve(question: string) {
+    const opinions = await this.collectOpinions(question);
+    return this.arbitrate(question, opinions);
+  }
+}
 ```
 
 ### 综合共识框架：分级策略
 
 将多种共识机制组合使用，从快到慢逐步升级。
 
-```python
-class ConsensusFramework:
-    """综合共识框架：分级策略"""
+```typescript
+/** 综合共识框架：分级策略 */
+class ConsensusFramework {
+  private voting = new VotingConsensus(3);
+  private arbiter = new ArbitrationConsensus();
 
-    def __init__(self):
-        self.voting = VotingConsensus(n_agents=3)
-        self.arbiter = ArbitrationConsensus()
+  /** 分级共识策略 */
+  async resolve(
+    question: string
+  ): Promise<{ method: string; answer: string; confidence: number }> {
+    // Level 1: 多 Agent 投票（快速）
+    const voteResult = await this.voting.reachConsensus(question);
+    if (voteResult.consensus_ratio > 0.6) {
+      return {
+        method: "voting",
+        answer: voteResult.consensus_answer,
+        confidence: voteResult.avg_confidence,
+      };
+    }
 
-    def resolve(self, question: str) -> dict:
-        """分级共识策略"""
-        # Level 1: 多 Agent 投票（快速）
-        vote_result = self.voting.reach_consensus(question)
-        if vote_result["consensus_ratio"] > 0.6:
-            return {
-                "method": "voting",
-                "answer": vote_result["consensus_answer"],
-                "confidence": vote_result["avg_confidence"],
-            }
-
-        # Level 2: 仲裁（更可靠但更慢）
-        arb_result = self.arbiter.resolve(question)
-        return {
-            "method": "arbitration",
-            "answer": arb_result["arbitration"],
-            "confidence": 0.7,
-        }
+    // Level 2: 仲裁（更可靠但更慢）
+    const arbResult = await this.arbiter.resolve(question);
+    return {
+      method: "arbitration",
+      answer: arbResult.arbitration,
+      confidence: 0.7,
+    };
+  }
+}
 ```
 
 ::: info 共识不等于正确

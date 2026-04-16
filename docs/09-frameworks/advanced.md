@@ -36,316 +36,435 @@
 
 ## 设计哲学
 
-```python
-"""
-Mini Agent Framework 设计原则：
-1. 简单 -- 核心代码不超过 500 行
-2. 可扩展 -- 插件化的 Model/Tool/Memory
-3. 可测试 -- 每个模块可独立测试
-4. 透明 -- 没有隐藏的魔法，代码即文档
-"""
+```typescript
+/**
+ * Mini Agent Framework 设计原则：
+ * 1. 简单 -- 核心代码不超过 500 行
+ * 2. 可扩展 -- 插件化的 Model/Tool/Memory
+ * 3. 可测试 -- 每个模块可独立测试
+ * 4. 透明 -- 没有隐藏的魔法，代码即文档
+ */
 ```
 
 ### 原则 1：组合优于继承
 
-```python
-# 坏的设计：深度继承
-class BaseAgent: ...
-class ToolAgent(BaseAgent): ...
-class RAGToolAgent(ToolAgent): ...
-class RAGToolMemoryAgent(RAGToolAgent): ...  # 无穷无尽
+```typescript
+// 坏的设计：深度继承
+class BaseAgent { /* ... */ }
+class ToolAgent extends BaseAgent { /* ... */ }
+class RAGToolAgent extends ToolAgent { /* ... */ }
+class RAGToolMemoryAgent extends RAGToolAgent { /* ... */ } // 无穷无尽
 
-# 好的设计：组合
-class Agent:
-    def __init__(self, model, tools, memory):
-        self.model = model      # 可插拔的模型
-        self.tools = tools      # 可插拔的工具
-        self.memory = memory    # 可插拔的记忆
+// 好的设计：组合
+class Agent {
+  model: ModelProvider;      // 可插拔的模型
+  tools: ToolRegistry;       // 可插拔的工具
+  memory: MemoryManager;     // 可插拔的记忆
+
+  constructor(model: ModelProvider, tools: ToolRegistry, memory: MemoryManager) {
+    this.model = model;
+    this.tools = tools;
+    this.memory = memory;
+  }
+}
 ```
 
 ### 原则 2：接口稳定，实现可变
 
-```python
-from abc import ABC, abstractmethod
+```typescript
+// 稳定的接口
+interface ModelProvider {
+  generate(
+    messages: Message[],
+    tools?: ToolDefinition[]
+  ): Promise<ModelResponse>;
+}
 
-# 稳定的接口
-class ModelProvider(ABC):
-    @abstractmethod
-    async def generate(self, messages, tools=None) -> ModelResponse:
-        ...
-
-# 可变的实现 -- 换模型只需换实现类
-class AnthropicProvider(ModelProvider): ...
-class OpenAIProvider(ModelProvider): ...
+// 可变的实现 -- 换模型只需换实现类
+class AnthropicProvider implements ModelProvider { /* ... */ }
+class OpenAIProvider implements ModelProvider { /* ... */ }
 ```
 
 ### 原则 3：中间件管道
 
-```python
-# 类似 Express/Koa 的中间件模式
-pipeline = [
-    InputValidator(),      # 输入验证
-    CostTracker(),          # 成本追踪
-    RateLimiter(),          # 速率限制
-    AgentRunner(),          # 核心执行
-    OutputValidator(),      # 输出验证
-]
+```typescript
+// 类似 Express/Koa 的中间件模式
+const pipeline: Middleware[] = [
+  new InputValidator(),      // 输入验证
+  new CostTracker(),          // 成本追踪
+  new RateLimiter(),          // 速率限制
+  new AgentRunner(),          // 核心执行
+  new OutputValidator(),      // 输出验证
+];
 ```
 
 ## 核心抽象层
 
 ### 类型定义
 
-```python
-"""mini_agent/types.py -- 核心类型定义"""
+```typescript
+/** mini-agent/types.ts -- 核心类型定义 */
 
-from dataclasses import dataclass, field
-from typing import Any
+interface ToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
 
-@dataclass
-class ToolCall:
-    id: str
-    name: str
-    arguments: dict[str, Any]
+interface ToolResult {
+  toolCallId: string;
+  output: string;
+  isError: boolean;
+}
 
-@dataclass
-class ToolResult:
-    tool_call_id: str
-    output: str
-    is_error: bool = False
+interface ModelResponse {
+  content: string;
+  toolCalls: ToolCall[];
+  stopReason: string;
+  inputTokens: number;
+  outputTokens: number;
+  model: string;
+}
 
-@dataclass
-class ModelResponse:
-    content: str
-    tool_calls: list[ToolCall] = field(default_factory=list)
-    stop_reason: str = "end_turn"
-    input_tokens: int = 0
-    output_tokens: int = 0
-    model: str = ""
+// 便捷计算属性用函数代替
+function hasToolCalls(response: ModelResponse): boolean {
+  return response.toolCalls.length > 0;
+}
 
-    @property
-    def has_tool_calls(self) -> bool:
-        return len(self.tool_calls) > 0
+interface ToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  handler?: ToolHandler;
+}
 
-@dataclass
-class ToolDefinition:
-    name: str
-    description: str
-    parameters: dict[str, Any]
-    handler: Any = None
+type ToolHandler = (
+  args: Record<string, unknown>
+) => string | Promise<string>;
 
-@dataclass
-class AgentResult:
-    output: str
-    iterations: int = 0
-    total_input_tokens: int = 0
-    total_output_tokens: int = 0
-    tool_calls_made: list[str] = field(default_factory=list)
-    model: str = ""
+interface AgentResult {
+  output: string;
+  iterations: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  toolCallsMade: string[];
+  model: string;
+}
 
-    @property
-    def total_tokens(self) -> int:
-        return self.total_input_tokens + self.total_output_tokens
+function totalTokens(result: AgentResult): number {
+  return result.totalInputTokens + result.totalOutputTokens;
+}
 ```
 
 ### Model Provider
 
-```python
-"""mini_agent/models.py -- 模型提供者"""
+```typescript
+/** mini-agent/models.ts -- 模型提供者 */
 
-from abc import ABC, abstractmethod
-import anthropic
-from .types import ModelResponse, ToolCall, ToolDefinition
+import Anthropic from "@anthropic-ai/sdk";
 
-class ModelProvider(ABC):
-    @abstractmethod
-    async def generate(self, messages: list[dict], tools: list[ToolDefinition] | None = None,
-                        system: str = "", max_tokens: int = 4096) -> ModelResponse:
-        ...
+interface ModelProvider {
+  generate(
+    messages: Record<string, unknown>[],
+    options?: {
+      tools?: ToolDefinition[];
+      system?: string;
+      maxTokens?: number;
+    }
+  ): Promise<ModelResponse>;
+}
 
-class AnthropicProvider(ModelProvider):
-    def __init__(self, model: str = "claude-sonnet-4-20250514", api_key: str | None = None):
-        self.model = model
-        self.client = anthropic.AsyncAnthropic(api_key=api_key)
+class AnthropicProvider implements ModelProvider {
+  private model: string;
+  private client: Anthropic;
 
-    def _format_tools(self, tools: list[ToolDefinition]) -> list[dict]:
-        return [{"name": t.name, "description": t.description, "input_schema": t.parameters}
-                for t in tools]
+  constructor(model: string = "claude-sonnet-4-20250514", apiKey?: string) {
+    this.model = model;
+    this.client = new Anthropic(apiKey ? { apiKey } : undefined);
+  }
 
-    async def generate(self, messages, tools=None, system="", max_tokens=4096):
-        kwargs = {"model": self.model, "max_tokens": max_tokens, "messages": messages}
-        if system:
-            kwargs["system"] = system
-        if tools:
-            kwargs["tools"] = self._format_tools(tools)
+  private formatTools(tools: ToolDefinition[]): Anthropic.Tool[] {
+    return tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.parameters as Anthropic.Tool["input_schema"],
+    }));
+  }
 
-        resp = await self.client.messages.create(**kwargs)
+  async generate(
+    messages: Anthropic.MessageParam[],
+    options: {
+      tools?: ToolDefinition[];
+      system?: string;
+      maxTokens?: number;
+    } = {}
+  ): Promise<ModelResponse> {
+    const createParams: Anthropic.MessageCreateParams = {
+      model: this.model,
+      max_tokens: options.maxTokens ?? 4096,
+      messages,
+    };
+    if (options.system) createParams.system = options.system;
+    if (options.tools)
+      createParams.tools = this.formatTools(options.tools);
 
-        text_parts, tool_calls = [], []
-        for block in resp.content:
-            if hasattr(block, "text"):
-                text_parts.append(block.text)
-            elif block.type == "tool_use":
-                tool_calls.append(ToolCall(id=block.id, name=block.name, arguments=block.input))
+    const resp = await this.client.messages.create(createParams);
 
-        return ModelResponse(
-            content="".join(text_parts), tool_calls=tool_calls,
-            stop_reason=resp.stop_reason,
-            input_tokens=resp.usage.input_tokens,
-            output_tokens=resp.usage.output_tokens,
-            model=self.model,
-        )
+    const textParts: string[] = [];
+    const toolCalls: ToolCall[] = [];
+    for (const block of resp.content) {
+      if (block.type === "text") {
+        textParts.push(block.text);
+      } else if (block.type === "tool_use") {
+        toolCalls.push({
+          id: block.id,
+          name: block.name,
+          arguments: block.input as Record<string, unknown>,
+        });
+      }
+    }
 
-class OpenAIProvider(ModelProvider):
-    def __init__(self, model: str = "gpt-4o", api_key: str | None = None):
-        import openai
-        self.model = model
-        self.client = openai.AsyncOpenAI(api_key=api_key)
+    return {
+      content: textParts.join(""),
+      toolCalls,
+      stopReason: resp.stop_reason ?? "end_turn",
+      inputTokens: resp.usage.input_tokens,
+      outputTokens: resp.usage.output_tokens,
+      model: this.model,
+    };
+  }
+}
 
-    def _format_tools(self, tools):
-        return [{"type": "function", "function": {"name": t.name, "description": t.description,
-                 "parameters": t.parameters}} for t in tools]
+class OpenAIProvider implements ModelProvider {
+  private model: string;
+  private client: unknown; // OpenAI client
 
-    async def generate(self, messages, tools=None, system="", max_tokens=4096):
-        import json
-        msgs = messages.copy()
-        if system:
-            msgs = [{"role": "system", "content": system}] + msgs
-        kwargs = {"model": self.model, "max_tokens": max_tokens, "messages": msgs}
-        if tools:
-            kwargs["tools"] = self._format_tools(tools)
+  constructor(model: string = "gpt-4o", apiKey?: string) {
+    // 动态导入 openai
+    const { default: OpenAI } = require("openai");
+    this.model = model;
+    this.client = new OpenAI(apiKey ? { apiKey } : undefined);
+  }
 
-        resp = await self.client.chat.completions.create(**kwargs)
-        choice = resp.choices[0]
+  private formatTools(tools: ToolDefinition[]) {
+    return tools.map((t) => ({
+      type: "function" as const,
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters,
+      },
+    }));
+  }
 
-        tool_calls = []
-        if choice.message.tool_calls:
-            for tc in choice.message.tool_calls:
-                tool_calls.append(ToolCall(
-                    id=tc.id, name=tc.function.name,
-                    arguments=json.loads(tc.function.arguments),
-                ))
+  async generate(
+    messages: Record<string, unknown>[],
+    options: {
+      tools?: ToolDefinition[];
+      system?: string;
+      maxTokens?: number;
+    } = {}
+  ): Promise<ModelResponse> {
+    const msgs = options.system
+      ? [{ role: "system", content: options.system }, ...messages]
+      : [...messages];
 
-        return ModelResponse(
-            content=choice.message.content or "", tool_calls=tool_calls,
-            stop_reason=choice.finish_reason,
-            input_tokens=resp.usage.prompt_tokens,
-            output_tokens=resp.usage.completion_tokens,
-            model=self.model,
-        )
+    const createParams: Record<string, unknown> = {
+      model: this.model,
+      max_tokens: options.maxTokens ?? 4096,
+      messages: msgs,
+    };
+    if (options.tools)
+      createParams.tools = this.formatTools(options.tools);
+
+    const resp = await (this.client as any).chat.completions.create(
+      createParams
+    );
+    const choice = resp.choices[0];
+
+    const toolCalls: ToolCall[] = [];
+    if (choice.message.tool_calls) {
+      for (const tc of choice.message.tool_calls) {
+        toolCalls.push({
+          id: tc.id,
+          name: tc.function.name,
+          arguments: JSON.parse(tc.function.arguments),
+        });
+      }
+    }
+
+    return {
+      content: choice.message.content ?? "",
+      toolCalls,
+      stopReason: choice.finish_reason,
+      inputTokens: resp.usage.prompt_tokens,
+      outputTokens: resp.usage.completion_tokens,
+      model: this.model,
+    };
+  }
+}
 ```
 
 ### Tool Registry
 
-`@tool` 装饰器从函数签名自动生成 JSON Schema，注册表统一管理和执行：
+`tool()` 辅助函数从参数自动生成 JSON Schema，注册表统一管理和执行：
 
-```python
-"""mini_agent/tools.py -- 工具注册与执行"""
+```typescript
+/** mini-agent/tools.ts -- 工具注册与执行 */
 
-import asyncio
-import inspect
-from typing import Callable, get_type_hints, Any
-from .types import ToolDefinition, ToolCall, ToolResult
+const TYPE_MAP: Record<string, string> = {
+  string: "string",
+  number: "number",
+  boolean: "boolean",
+  object: "object",
+};
 
-TYPE_MAP = {str: "string", int: "integer", float: "number", bool: "boolean", list: "array"}
+// 工具构建辅助函数（等价于 Python @tool 装饰器）
+function defineTool(config: {
+  name: string;
+  description: string;
+  parameters: Record<
+    string,
+    { type: string; description?: string; required?: boolean }
+  >;
+  handler: ToolHandler;
+}): ToolDefinition {
+  const props: Record<string, unknown> = {};
+  const required: string[] = [];
 
-def tool(name: str | None = None, description: str | None = None):
-    """工具装饰器 -- 从函数签名自动生成 schema"""
-    def decorator(func):
-        hints = get_type_hints(func)
-        sig = inspect.signature(func)
-        props, required = {}, []
-        for pname, param in sig.parameters.items():
-            if pname == "self":
-                continue
-            ptype = hints.get(pname, str)
-            props[pname] = {"type": TYPE_MAP.get(ptype, "string")}
-            if param.default is inspect.Parameter.empty:
-                required.append(pname)
+  for (const [paramName, paramConfig] of Object.entries(
+    config.parameters
+  )) {
+    props[paramName] = {
+      type: paramConfig.type,
+      ...(paramConfig.description
+        ? { description: paramConfig.description }
+        : {}),
+    };
+    if (paramConfig.required !== false) {
+      required.push(paramName);
+    }
+  }
 
-        func._tool_def = ToolDefinition(
-            name=name or func.__name__,
-            description=(description or func.__doc__ or "").strip(),
-            parameters={"type": "object", "properties": props, "required": required},
-            handler=func,
-        )
-        return func
-    return decorator
+  return {
+    name: config.name,
+    description: config.description,
+    parameters: {
+      type: "object",
+      properties: props,
+      required,
+    },
+    handler: config.handler,
+  };
+}
 
-class ToolRegistry:
-    def __init__(self):
-        self._tools: dict[str, ToolDefinition] = {}
+class ToolRegistry {
+  private tools: Map<string, ToolDefinition> = new Map();
 
-    def register(self, func_or_def):
-        if hasattr(func_or_def, "_tool_def"):
-            d = func_or_def._tool_def
-        elif isinstance(func_or_def, ToolDefinition):
-            d = func_or_def
-        else:
-            raise TypeError("使用 @tool 装饰器或传入 ToolDefinition")
-        self._tools[d.name] = d
-        return func_or_def
+  register(toolDef: ToolDefinition): void {
+    this.tools.set(toolDef.name, toolDef);
+  }
 
-    @property
-    def definitions(self) -> list[ToolDefinition]:
-        return list(self._tools.values())
+  get definitions(): ToolDefinition[] {
+    return Array.from(this.tools.values());
+  }
 
-    async def execute(self, call: ToolCall) -> ToolResult:
-        defn = self._tools.get(call.name)
-        if not defn:
-            return ToolResult(call.id, f"未知工具: {call.name}", is_error=True)
-        try:
-            fn = defn.handler
-            result = await fn(**call.arguments) if asyncio.iscoroutinefunction(fn) else fn(**call.arguments)
-            return ToolResult(call.id, str(result))
-        except Exception as e:
-            return ToolResult(call.id, f"执行错误: {e}", is_error=True)
+  async execute(call: ToolCall): Promise<ToolResult> {
+    const defn = this.tools.get(call.name);
+    if (!defn || !defn.handler) {
+      return {
+        toolCallId: call.id,
+        output: `未知工具: ${call.name}`,
+        isError: true,
+      };
+    }
+    try {
+      const result = await defn.handler(call.arguments);
+      return { toolCallId: call.id, output: String(result), isError: false };
+    } catch (e) {
+      return {
+        toolCallId: call.id,
+        output: `执行错误: ${e}`,
+        isError: true,
+      };
+    }
+  }
 
-    async def execute_parallel(self, calls: list[ToolCall]) -> list[ToolResult]:
-        return list(await asyncio.gather(*[self.execute(c) for c in calls]))
+  async executeParallel(calls: ToolCall[]): Promise<ToolResult[]> {
+    return Promise.all(calls.map((c) => this.execute(c)));
+  }
+}
 ```
 
 ### Memory Manager
 
-```python
-"""mini_agent/memory.py -- 记忆管理"""
+```typescript
+/** mini-agent/memory.ts -- 记忆管理 */
 
-class BufferMemory:
-    """简单缓冲记忆 -- 保留最近 N 条消息"""
-    def __init__(self, max_messages: int = 100):
-        self.max = max_messages
-        self._messages: list[dict] = []
+interface MemoryManager {
+  add(message: Record<string, unknown>): void;
+  getMessages(): Record<string, unknown>[];
+  clear(): void;
+  readonly size: number;
+}
 
-    def add(self, message: dict):
-        self._messages.append(message)
-        if len(self._messages) > self.max:
-            self._messages = self._messages[-self.max:]
+/** 简单缓冲记忆 -- 保留最近 N 条消息 */
+class BufferMemory implements MemoryManager {
+  private max: number;
+  private messages: Record<string, unknown>[] = [];
 
-    def get_messages(self) -> list[dict]:
-        return list(self._messages)
+  constructor(maxMessages: number = 100) {
+    this.max = maxMessages;
+  }
 
-    def clear(self):
-        self._messages.clear()
+  add(message: Record<string, unknown>): void {
+    this.messages.push(message);
+    if (this.messages.length > this.max) {
+      this.messages = this.messages.slice(-this.max);
+    }
+  }
 
-    @property
-    def size(self) -> int:
-        return len(self._messages)
+  getMessages(): Record<string, unknown>[] {
+    return [...this.messages];
+  }
 
-class WindowMemory:
-    """滑动窗口记忆 -- 保留最近 N 轮对话"""
-    def __init__(self, window_size: int = 10):
-        self.window = window_size
-        self._messages: list[dict] = []
+  clear(): void {
+    this.messages = [];
+  }
 
-    def add(self, message: dict):
-        self._messages.append(message)
+  get size(): number {
+    return this.messages.length;
+  }
+}
 
-    def get_messages(self) -> list[dict]:
-        keep = self.window * 2  # 每轮 = user + assistant
-        return self._messages[-keep:] if len(self._messages) > keep else list(self._messages)
+/** 滑动窗口记忆 -- 保留最近 N 轮对话 */
+class WindowMemory implements MemoryManager {
+  private window: number;
+  private messages: Record<string, unknown>[] = [];
 
-    def clear(self):
-        self._messages.clear()
+  constructor(windowSize: number = 10) {
+    this.window = windowSize;
+  }
+
+  add(message: Record<string, unknown>): void {
+    this.messages.push(message);
+  }
+
+  getMessages(): Record<string, unknown>[] {
+    const keep = this.window * 2; // 每轮 = user + assistant
+    return this.messages.length > keep
+      ? this.messages.slice(-keep)
+      : [...this.messages];
+  }
+
+  clear(): void {
+    this.messages = [];
+  }
+
+  get size(): number {
+    return this.messages.length;
+  }
+}
 ```
 
 ## 插件系统
@@ -354,166 +473,207 @@ class WindowMemory:
 
 借鉴 Express/Koa 的洋葱模型 -- 每个中间件可以在 Agent 执行前后插入逻辑：
 
-```python
-"""mini_agent/middleware.py -- 中间件系统"""
+```typescript
+/** mini-agent/middleware.ts -- 中间件系统 */
 
-import time
-from abc import ABC, abstractmethod
-from typing import Any
-from dataclasses import dataclass, field
+interface Context {
+  metadata: Record<string, unknown>;
+}
 
-@dataclass
-class Context:
-    metadata: dict = field(default_factory=dict)
+function createContext(): Context {
+  return { metadata: {} };
+}
 
-class Middleware(ABC):
-    @abstractmethod
-    async def __call__(self, ctx: Context, next_fn) -> Any:
-        ...
+type NextFn = () => Promise<unknown>;
 
-class Pipeline:
-    def __init__(self):
-        self._mw: list[Middleware] = []
+interface Middleware {
+  (ctx: Context, next: NextFn): Promise<unknown>;
+}
 
-    def use(self, mw: Middleware):
-        self._mw.append(mw)
-        return self
+class Pipeline {
+  private middlewares: Middleware[] = [];
 
-    async def run(self, ctx: Context, core_fn):
-        index = 0
-        async def next_fn():
-            nonlocal index
-            if index < len(self._mw):
-                mw = self._mw[index]
-                index += 1
-                return await mw(ctx, next_fn)
-            else:
-                return await core_fn(ctx)
-        return await next_fn()
+  use(mw: Middleware): this {
+    this.middlewares.push(mw);
+    return this;
+  }
+
+  async run<T>(
+    ctx: Context,
+    coreFn: (ctx: Context) => Promise<T>
+  ): Promise<T> {
+    let index = 0;
+
+    const next: NextFn = async () => {
+      if (index < this.middlewares.length) {
+        const mw = this.middlewares[index++];
+        return mw(ctx, next);
+      } else {
+        return coreFn(ctx);
+      }
+    };
+
+    return (await next()) as T;
+  }
+}
 ```
 
 ### 内置中间件
 
-```python
-class TimingMiddleware(Middleware):
-    """耗时统计"""
-    async def __call__(self, ctx, next_fn):
-        start = time.monotonic()
-        result = await next_fn()
-        ctx.metadata["duration_ms"] = int((time.monotonic() - start) * 1000)
-        return result
+```typescript
+/** 耗时统计 */
+const timingMiddleware: Middleware = async (ctx, next) => {
+  const start = performance.now();
+  const result = await next();
+  ctx.metadata.durationMs = Math.round(performance.now() - start);
+  return result;
+};
 
-class CostMiddleware(Middleware):
-    """成本追踪"""
-    PRICES = {
-        "claude-sonnet-4-20250514": (3.0, 15.0),
-        "claude-haiku-3-20250414": (0.25, 1.25),
-    }
-    async def __call__(self, ctx, next_fn):
-        result = await next_fn()
-        if result and hasattr(result, "total_input_tokens"):
-            pi, po = self.PRICES.get(result.model, (3.0, 15.0))
-            ctx.metadata["cost_usd"] = round(
-                result.total_input_tokens * pi / 1e6 + result.total_output_tokens * po / 1e6, 6)
-        return result
+/** 成本追踪 */
+const PRICES: Record<string, [number, number]> = {
+  "claude-sonnet-4-20250514": [3.0, 15.0],
+  "claude-haiku-3-20250414": [0.25, 1.25],
+};
 
-class MaxIterationsMiddleware(Middleware):
-    """迭代次数限制"""
-    def __init__(self, max_iter: int = 25):
-        self.max = max_iter
-    async def __call__(self, ctx, next_fn):
-        ctx.metadata["max_iterations"] = self.max
-        return await next_fn()
+const costMiddleware: Middleware = async (ctx, next) => {
+  const result = await next();
+  if (
+    result &&
+    typeof result === "object" &&
+    "totalInputTokens" in result
+  ) {
+    const r = result as AgentResult;
+    const [pi, po] = PRICES[r.model] ?? [3.0, 15.0];
+    ctx.metadata.costUsd =
+      Math.round(
+        (r.totalInputTokens * pi + r.totalOutputTokens * po) / 1e6 * 1e6
+      ) / 1e6;
+  }
+  return result;
+};
+
+/** 迭代次数限制 */
+function maxIterationsMiddleware(maxIter: number = 25): Middleware {
+  return async (ctx, next) => {
+    ctx.metadata.maxIterations = maxIter;
+    return next();
+  };
+}
 ```
 
 ### Hook 系统
 
 比中间件更细粒度的生命周期钩子：
 
-```python
-"""Hook 系统 -- 细粒度的生命周期钩子"""
+```typescript
+/** Hook 系统 -- 细粒度的生命周期钩子 */
 
-import asyncio
-from typing import Callable, Any
-from collections import defaultdict
+type HookHandler = (args: Record<string, unknown>) => unknown | Promise<unknown>;
 
-class HookManager:
-    VALID_HOOKS = [
-        "before_llm_call",       # LLM 调用前
-        "after_llm_call",        # LLM 调用后
-        "before_tool_call",      # 工具调用前
-        "after_tool_call",       # 工具调用后
-        "on_error",              # 发生错误时
-        "on_iteration",          # 每次迭代时
-        "on_complete",           # 任务完成时
-    ]
+const VALID_HOOKS = [
+  "before_llm_call",    // LLM 调用前
+  "after_llm_call",     // LLM 调用后
+  "before_tool_call",   // 工具调用前
+  "after_tool_call",    // 工具调用后
+  "on_error",           // 发生错误时
+  "on_iteration",       // 每次迭代时
+  "on_complete",        // 任务完成时
+] as const;
 
-    def __init__(self):
-        self._hooks: dict[str, list[Callable]] = defaultdict(list)
+type HookEvent = (typeof VALID_HOOKS)[number];
 
-    def on(self, event: str, handler: Callable):
-        if event not in self.VALID_HOOKS:
-            raise ValueError(f"未知钩子: {event}. 可用: {self.VALID_HOOKS}")
-        self._hooks[event].append(handler)
+class HookManager {
+  private hooks: Map<HookEvent, HookHandler[]> = new Map();
 
-    async def emit(self, event: str, **kwargs) -> list[Any]:
-        results = []
-        for handler in self._hooks.get(event, []):
-            if asyncio.iscoroutinefunction(handler):
-                result = await handler(**kwargs)
-            else:
-                result = handler(**kwargs)
-            results.append(result)
-        return results
+  on(event: HookEvent, handler: HookHandler): void {
+    if (!VALID_HOOKS.includes(event)) {
+      throw new Error(
+        `未知钩子: ${event}. 可用: ${VALID_HOOKS.join(", ")}`
+      );
+    }
+    const handlers = this.hooks.get(event) ?? [];
+    handlers.push(handler);
+    this.hooks.set(event, handlers);
+  }
 
-# 使用示例
-hooks = HookManager()
-hooks.on("before_llm_call", lambda messages, **kw:
-    print(f"即将调用 LLM，消息数: {len(messages)}"))
-hooks.on("after_tool_call", lambda tool_name, result, **kw:
-    print(f"工具 {tool_name} 执行完成"))
+  async emit(
+    event: HookEvent,
+    args: Record<string, unknown> = {}
+  ): Promise<unknown[]> {
+    const handlers = this.hooks.get(event) ?? [];
+    const results: unknown[] = [];
+    for (const handler of handlers) {
+      results.push(await handler(args));
+    }
+    return results;
+  }
+}
+
+// 使用示例
+const hooks = new HookManager();
+hooks.on("before_llm_call", ({ messages }) =>
+  console.log(
+    `即将调用 LLM，消息数: ${(messages as unknown[]).length}`
+  )
+);
+hooks.on("after_tool_call", ({ toolName, result }) =>
+  console.log(`工具 ${toolName} 执行完成`)
+);
 ```
 
 ### 动态工具注册
 
 支持运行时增减工具，按上下文过滤相关工具：
 
-```python
-class DynamicToolRegistry:
-    def __init__(self):
-        self._tools = {}
-        self._on_change_callbacks = []
+```typescript
+type ChangeCallback = (
+  action: "added" | "removed",
+  toolName: string
+) => void;
 
-    def register(self, tool_def):
-        if hasattr(tool_def, "_tool_def"):
-            defn = tool_def._tool_def
-        else:
-            defn = tool_def
-        self._tools[defn.name] = defn
-        self._notify_change("added", defn.name)
+class DynamicToolRegistry {
+  private tools: Map<string, ToolDefinition> = new Map();
+  private onChangeCallbacks: ChangeCallback[] = [];
 
-    def unregister(self, name: str):
-        if name in self._tools:
-            del self._tools[name]
-            self._notify_change("removed", name)
+  register(toolDef: ToolDefinition): void {
+    this.tools.set(toolDef.name, toolDef);
+    this.notifyChange("added", toolDef.name);
+  }
 
-    def on_change(self, callback):
-        self._on_change_callbacks.append(callback)
+  unregister(name: string): void {
+    if (this.tools.has(name)) {
+      this.tools.delete(name);
+      this.notifyChange("removed", name);
+    }
+  }
 
-    def _notify_change(self, action: str, tool_name: str):
-        for cb in self._on_change_callbacks:
-            cb(action, tool_name)
+  onChange(callback: ChangeCallback): void {
+    this.onChangeCallbacks.push(callback);
+  }
 
-    def get_tools_for_context(self, context: str | None = None) -> list:
-        """根据上下文返回相关工具（而非全部）"""
-        if not context:
-            return list(self._tools.values())
-        relevant = []
-        for defn in self._tools.values():
-            desc = f"{defn.name} {defn.description}".lower()
-            if any(kw in desc for kw in context.lower().split()):
-                relevant.append(defn)
-        return relevant or list(self._tools.values())
+  private notifyChange(
+    action: "added" | "removed",
+    toolName: string
+  ): void {
+    for (const cb of this.onChangeCallbacks) {
+      cb(action, toolName);
+    }
+  }
+
+  /** 根据上下文返回相关工具（而非全部） */
+  getToolsForContext(context?: string): ToolDefinition[] {
+    const allTools = Array.from(this.tools.values());
+    if (!context) return allTools;
+
+    const keywords = context.toLowerCase().split(/\s+/);
+    const relevant = allTools.filter((defn) => {
+      const desc = `${defn.name} ${defn.description}`.toLowerCase();
+      return keywords.some((kw) => desc.includes(kw));
+    });
+
+    return relevant.length > 0 ? relevant : allTools;
+  }
+}
 ```
 
 ## 完整实现：Mini Agent Framework
@@ -521,195 +681,250 @@ class DynamicToolRegistry:
 将所有模块整合为完整框架。项目结构：
 
 ```
-mini_agent/
-├── __init__.py          # 对外导出
-├── types.py             # 类型定义（58 行）
-├── models.py            # Model Provider（95 行）
-├── tools.py             # Tool Registry（90 行）
-├── memory.py            # Memory Manager（60 行）
-├── middleware.py         # 中间件系统（80 行）
-├── agent.py             # Agent Runner（120 行）
+mini-agent/
+├── index.ts             # 对外导出
+├── types.ts             # 类型定义（58 行）
+├── models.ts            # Model Provider（95 行）
+├── tools.ts             # Tool Registry（90 行）
+├── memory.ts            # Memory Manager（60 行）
+├── middleware.ts         # 中间件系统（80 行）
+├── agent.ts             # Agent Runner（120 行）
 总计约 503 行
 ```
 
 ### Agent Runner -- 核心循环
 
-```python
-"""mini_agent/agent.py -- Agent Runner 核心循环"""
+```typescript
+/** mini-agent/agent.ts -- Agent Runner 核心循环 */
 
-from .types import AgentResult, ModelResponse
-from .models import ModelProvider
-from .tools import ToolRegistry
-from .memory import BufferMemory
-from .middleware import Pipeline, Context
+import Anthropic from "@anthropic-ai/sdk";
 
-class Agent:
-    """Mini Agent Framework 核心类"""
+class MiniAgent {
+  /** Mini Agent Framework 核心类 */
+  model: ModelProvider;
+  tools: ToolRegistry;
+  memory: MemoryManager;
+  systemPrompt: string;
+  maxIterations: number;
+  maxTokens: number;
+  pipeline: Pipeline;
 
-    def __init__(
-        self,
-        model: ModelProvider,
-        tools: ToolRegistry | None = None,
-        memory: BufferMemory | None = None,
-        system_prompt: str = "",
-        max_iterations: int = 25,
-        max_tokens: int = 4096,
-    ):
-        self.model = model
-        self.tools = tools or ToolRegistry()
-        self.memory = memory or BufferMemory()
-        self.system_prompt = system_prompt
-        self.max_iterations = max_iterations
-        self.max_tokens = max_tokens
-        self.pipeline = Pipeline()
+  constructor(config: {
+    model: ModelProvider;
+    tools?: ToolRegistry;
+    memory?: MemoryManager;
+    systemPrompt?: string;
+    maxIterations?: number;
+    maxTokens?: number;
+  }) {
+    this.model = config.model;
+    this.tools = config.tools ?? new ToolRegistry();
+    this.memory = config.memory ?? new BufferMemory();
+    this.systemPrompt = config.systemPrompt ?? "";
+    this.maxIterations = config.maxIterations ?? 25;
+    this.maxTokens = config.maxTokens ?? 4096;
+    this.pipeline = new Pipeline();
+  }
 
-    def use(self, middleware):
-        """添加中间件"""
-        self.pipeline.use(middleware)
-        return self
+  /** 添加中间件 */
+  use(middleware: Middleware): this {
+    this.pipeline.use(middleware);
+    return this;
+  }
 
-    async def run(self, message: str) -> AgentResult:
-        """运行 Agent"""
-        ctx = Context()
-        ctx.metadata["max_iterations"] = self.max_iterations
+  /** 运行 Agent */
+  async run(message: string): Promise<AgentResult> {
+    const ctx = createContext();
+    ctx.metadata.maxIterations = this.maxIterations;
 
-        async def core(ctx):
-            return await self._agent_loop(message, ctx)
+    return this.pipeline.run(ctx, (ctx) =>
+      this.agentLoop(message, ctx)
+    );
+  }
 
-        return await self.pipeline.run(ctx, core)
+  /** Agent 核心循环 */
+  private async agentLoop(
+    message: string,
+    ctx: Context
+  ): Promise<AgentResult> {
+    this.memory.add({ role: "user", content: message });
+    const messages = this.memory.getMessages();
+    const toolDefs =
+      this.tools.definitions.length > 0
+        ? this.tools.definitions
+        : undefined;
 
-    async def _agent_loop(self, message: str, ctx: Context) -> AgentResult:
-        """Agent 核心循环"""
-        self.memory.add({"role": "user", "content": message})
-        messages = self.memory.get_messages()
-        tool_defs = self.tools.definitions if self.tools.definitions else None
+    let totalIn = 0;
+    let totalOut = 0;
+    const toolCallsMade: string[] = [];
+    const maxIter =
+      (ctx.metadata.maxIterations as number) ?? this.maxIterations;
 
-        total_in, total_out = 0, 0
-        tool_calls_made = []
-        max_iter = ctx.metadata.get("max_iterations", self.max_iterations)
+    let lastResponse: ModelResponse | null = null;
 
-        for iteration in range(max_iter):
-            response: ModelResponse = await self.model.generate(
-                messages=messages,
-                tools=tool_defs,
-                system=self.system_prompt,
-                max_tokens=self.max_tokens,
-            )
+    for (let iteration = 0; iteration < maxIter; iteration++) {
+      const response = await this.model.generate(
+        messages as Anthropic.MessageParam[],
+        {
+          tools: toolDefs,
+          system: this.systemPrompt,
+          maxTokens: this.maxTokens,
+        }
+      );
 
-            total_in += response.input_tokens
-            total_out += response.output_tokens
+      totalIn += response.inputTokens;
+      totalOut += response.outputTokens;
+      lastResponse = response;
 
-            # 没有工具调用 -> 返回最终结果
-            if not response.has_tool_calls:
-                self.memory.add({"role": "assistant", "content": response.content})
-                return AgentResult(
-                    output=response.content,
-                    iterations=iteration + 1,
-                    total_input_tokens=total_in,
-                    total_output_tokens=total_out,
-                    tool_calls_made=tool_calls_made,
-                    model=response.model,
-                )
+      // 没有工具调用 -> 返回最终结果
+      if (!hasToolCalls(response)) {
+        this.memory.add({
+          role: "assistant",
+          content: response.content,
+        });
+        return {
+          output: response.content,
+          iterations: iteration + 1,
+          totalInputTokens: totalIn,
+          totalOutputTokens: totalOut,
+          toolCallsMade,
+          model: response.model,
+        };
+      }
 
-            # 处理工具调用
-            messages.append({"role": "assistant", "content": response.content,
-                           "_raw_content": response})
+      // 处理工具调用
+      messages.push({
+        role: "assistant",
+        content: response.content,
+      });
 
-            results = await self.tools.execute_parallel(response.tool_calls)
-            tool_calls_made.extend([tc.name for tc in response.tool_calls])
+      const results = await this.tools.executeParallel(
+        response.toolCalls
+      );
+      toolCallsMade.push(...response.toolCalls.map((tc) => tc.name));
 
-            tool_result_content = [
-                {"type": "tool_result", "tool_use_id": r.tool_call_id,
-                 "content": r.output, "is_error": r.is_error}
-                for r in results
-            ]
-            messages.append({"role": "user", "content": tool_result_content})
+      const toolResultContent = results.map((r) => ({
+        type: "tool_result" as const,
+        tool_use_id: r.toolCallId,
+        content: r.output,
+        is_error: r.isError,
+      }));
+      messages.push({ role: "user", content: toolResultContent });
+    }
 
-        return AgentResult(
-            output="达到最大迭代次数",
-            iterations=max_iter,
-            total_input_tokens=total_in,
-            total_output_tokens=total_out,
-            tool_calls_made=tool_calls_made,
-            model=response.model,
-        )
+    return {
+      output: "达到最大迭代次数",
+      iterations: maxIter,
+      totalInputTokens: totalIn,
+      totalOutputTokens: totalOut,
+      toolCallsMade,
+      model: lastResponse?.model ?? "",
+    };
+  }
+}
 ```
 
 ### 对外导出
 
-```python
-"""mini_agent -- 一个约 500 行代码的 Agent 框架"""
+```typescript
+/** mini-agent/index.ts -- 一个约 500 行代码的 Agent 框架 */
 
-from .agent import Agent
-from .models import AnthropicProvider, OpenAIProvider, ModelProvider
-from .tools import tool, ToolRegistry, ToolDefinition
-from .memory import BufferMemory, WindowMemory
-from .middleware import Pipeline, TimingMiddleware, CostMiddleware, Middleware, Context
-from .types import AgentResult, ModelResponse
+export {
+  MiniAgent,
+  AnthropicProvider,
+  OpenAIProvider,
+  defineTool,
+  ToolRegistry,
+  BufferMemory,
+  WindowMemory,
+  Pipeline,
+  HookManager,
+};
 
-__all__ = [
-    "Agent", "AnthropicProvider", "OpenAIProvider", "ModelProvider",
-    "tool", "ToolRegistry", "ToolDefinition",
-    "BufferMemory", "WindowMemory",
-    "Pipeline", "TimingMiddleware", "CostMiddleware", "Middleware", "Context",
-    "AgentResult", "ModelResponse",
-]
+// 导出类型
+export type {
+  ModelProvider,
+  MemoryManager,
+  Middleware,
+  Context,
+  ToolDefinition,
+  ToolHandler,
+  AgentResult,
+  ModelResponse,
+  ToolCall,
+  ToolResult,
+};
 ```
 
 ### 使用示例
 
-```python
-"""example.py -- Mini Agent Framework 使用示例"""
+```typescript
+/** example.ts -- Mini Agent Framework 使用示例 */
 
-import asyncio
-from mini_agent import (
-    Agent, AnthropicProvider, ToolRegistry, tool,
-    BufferMemory, TimingMiddleware, CostMiddleware,
-)
+import {
+  MiniAgent,
+  AnthropicProvider,
+  ToolRegistry,
+  defineTool,
+  BufferMemory,
+} from "./mini-agent";
 
-# 1. 定义工具
-@tool(name="calculate", description="计算数学表达式")
-def calculate(expression: str) -> str:
-    """计算数学表达式。expression: 合法的 Python 数学表达式"""
-    try:
-        result = eval(expression, {"__builtins__": {}}, {})
-        return str(result)
-    except Exception as e:
-        return f"计算错误: {e}"
+// 1. 定义工具
+const calculate = defineTool({
+  name: "calculate",
+  description: "计算数学表达式",
+  parameters: {
+    expression: {
+      type: "string",
+      description: "合法的数学表达式",
+    },
+  },
+  handler: (args) => {
+    try {
+      return String(eval(args.expression as string));
+    } catch (e) {
+      return `计算错误: ${e}`;
+    }
+  },
+});
 
-@tool(name="get_time", description="获取当前时间")
-def get_time() -> str:
-    """获取当前日期和时间"""
-    from datetime import datetime
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+const getTime = defineTool({
+  name: "get_time",
+  description: "获取当前时间",
+  parameters: {},
+  handler: () => new Date().toISOString(),
+});
 
-# 2. 注册工具
-tools = ToolRegistry()
-tools.register(calculate)
-tools.register(get_time)
+// 2. 注册工具
+const tools = new ToolRegistry();
+tools.register(calculate);
+tools.register(getTime);
 
-# 3. 创建 Agent
-agent = Agent(
-    model=AnthropicProvider(model="claude-sonnet-4-20250514"),
-    tools=tools,
-    memory=BufferMemory(max_messages=50),
-    system_prompt="你是一个有用的助手。使用工具来回答问题。",
-    max_iterations=10,
-)
+// 3. 创建 Agent
+const agent = new MiniAgent({
+  model: new AnthropicProvider("claude-sonnet-4-20250514"),
+  tools,
+  memory: new BufferMemory(50),
+  systemPrompt: "你是一个有用的助手。使用工具来回答问题。",
+  maxIterations: 10,
+});
 
-# 4. 添加中间件
-agent.use(TimingMiddleware())
-agent.use(CostMiddleware())
+// 4. 添加中间件
+agent.use(timingMiddleware);
+agent.use(costMiddleware);
 
-# 5. 运行
-async def main():
-    result = await agent.run("现在几点了？然后帮我算一下 123 * 456 + 789")
-    print(f"回复: {result.output}")
-    print(f"迭代次数: {result.iterations}")
-    print(f"Token 用量: {result.total_tokens}")
-    print(f"工具调用: {result.tool_calls_made}")
+// 5. 运行
+async function main() {
+  const result = await agent.run(
+    "现在几点了？然后帮我算一下 123 * 456 + 789"
+  );
+  console.log(`回复: ${result.output}`);
+  console.log(`迭代次数: ${result.iterations}`);
+  console.log(`Token 用量: ${totalTokens(result)}`);
+  console.log(`工具调用: ${result.toolCallsMade.join(", ")}`);
+}
 
-asyncio.run(main())
+main();
 ```
 
 ## 小结
@@ -717,7 +932,7 @@ asyncio.run(main())
 - 自建框架不是重复造轮子，而是为了：深入理解底层机制、获得完全可控的生产系统、按需定制不受框架限制
 - 核心设计哲学：组合优于继承、接口稳定实现可变、中间件管道模式
 - **Model Provider** 统一不同 LLM 的调用接口，换模型只需换实现类
-- **Tool Registry** 用装饰器自动生成 schema，注册表统一管理和并行执行
+- **Tool Registry** 用辅助函数自动生成 schema，注册表统一管理和并行执行
 - **Memory Manager** 可插拔的记忆后端，从简单缓冲到滑动窗口
 - **Middleware Pipeline** 洋葱模型，before/after 逻辑自由组合
 - **Hook 系统** 细粒度的生命周期事件，支持动态工具注册

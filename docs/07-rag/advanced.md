@@ -15,320 +15,416 @@
 
 Agentic RAG 让 Agent 自己决定**要不要检索**、**检索什么**、**检索几次**：
 
-```python
-"""Agentic RAG -- Agent 自主决策的 RAG"""
-import anthropic
-import chromadb
-import json
+```typescript
+/** Agentic RAG -- Agent 自主决策的 RAG */
+import Anthropic from "@anthropic-ai/sdk";
+import { ChromaClient } from "chromadb";
 
-anthropic_client = anthropic.Anthropic()
-chroma_client = chromadb.Client()
-collection = chroma_client.get_or_create_collection("agentic_rag")
+const anthropicClient = new Anthropic();
+const chromaClient = new ChromaClient();
+const collection = await chromaClient.getOrCreateCollection({
+  name: "agentic_rag",
+});
 
-# 预置知识库（实际中应该有大量文档）
-collection.add(
-    documents=[
-        "Python 3.12 引入了 type 语句，简化类型别名定义。",
-        "FastAPI 使用 Pydantic 进行数据验证，支持自动生成 API 文档。",
-        "Django ORM 支持惰性查询，只在真正需要数据时才执行 SQL。",
-        "Docker 容器共享主机内核，比虚拟机更轻量。",
-        "Kubernetes 通过 Pod 管理容器，支持自动扩缩容。",
-    ],
-    ids=[f"doc_{i}" for i in range(5)]
-)
+// 预置知识库（实际中应该有大量文档）
+await collection.add({
+  documents: [
+    "Python 3.12 引入了 type 语句，简化类型别名定义。",
+    "FastAPI 使用 Pydantic 进行数据验证，支持自动生成 API 文档。",
+    "Django ORM 支持惰性查询，只在真正需要数据时才执行 SQL。",
+    "Docker 容器共享主机内核，比虚拟机更轻量。",
+    "Kubernetes 通过 Pod 管理容器，支持自动扩缩容。",
+  ],
+  ids: Array.from({ length: 5 }, (_, i) => `doc_${i}`),
+});
 
-
-# 将检索定义为工具
-tools = [
-    {
-        "name": "search_knowledge_base",
-        "description": (
-            "搜索内部知识库获取技术文档信息。"
-            "当用户的问题涉及特定技术细节、产品文档、内部规范时使用。"
-            "对于常识性问题、数学计算、简单推理，不需要使用此工具。"
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "搜索关键词，尽量精确"
-                },
-                "n_results": {
-                    "type": "integer",
-                    "description": "返回结果数量，默认3"
-                }
-            },
-            "required": ["query"]
-        }
+// 将检索定义为工具
+const tools: Anthropic.Tool[] = [
+  {
+    name: "search_knowledge_base",
+    description:
+      "搜索内部知识库获取技术文档信息。"
+      + "当用户的问题涉及特定技术细节、产品文档、内部规范时使用。"
+      + "对于常识性问题、数学计算、简单推理，不需要使用此工具。",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        query: {
+          type: "string",
+          description: "搜索关键词，尽量精确",
+        },
+        n_results: {
+          type: "integer",
+          description: "返回结果数量，默认3",
+        },
+      },
+      required: ["query"],
     },
-    {
-        "name": "search_with_filter",
-        "description": "带过滤条件搜索知识库。当需要限定搜索范围时使用。",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "category": {
-                    "type": "string",
-                    "enum": ["python", "web", "devops", "database"],
-                    "description": "文档分类"
-                }
-            },
-            "required": ["query"]
-        }
-    }
-]
+  },
+  {
+    name: "search_with_filter",
+    description: "带过滤条件搜索知识库。当需要限定搜索范围时使用。",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        query: { type: "string" },
+        category: {
+          type: "string",
+          enum: ["python", "web", "devops", "database"],
+          description: "文档分类",
+        },
+      },
+      required: ["query"],
+    },
+  },
+];
 
-
-def search_knowledge_base(query: str, n_results: int = 3) -> dict:
-    results = collection.query(query_texts=[query], n_results=n_results)
-    return {
-        "query": query,
-        "results": results["documents"][0] if results["documents"][0] else [],
-        "count": len(results["documents"][0])
-    }
-
-def search_with_filter(query: str, category: str = None) -> dict:
-    kwargs = {"query_texts": [query], "n_results": 3}
-    if category:
-        kwargs["where"] = {"category": category}
-    results = collection.query(**kwargs)
-    return {"results": results["documents"][0], "filter": category}
-
-
-tool_map = {
-    "search_knowledge_base": search_knowledge_base,
-    "search_with_filter": search_with_filter
+async function searchKnowledgeBase(
+  query: string,
+  nResults: number = 3
+): Promise<Record<string, any>> {
+  const results = await collection.query({ queryTexts: [query], nResults });
+  return {
+    query,
+    results: results.documents[0] || [],
+    count: results.documents[0]?.length || 0,
+  };
 }
 
+async function searchWithFilter(
+  query: string,
+  category?: string
+): Promise<Record<string, any>> {
+  const options: any = { queryTexts: [query], nResults: 3 };
+  if (category) {
+    options.where = { category };
+  }
+  const results = await collection.query(options);
+  return { results: results.documents[0], filter: category };
+}
 
-def agentic_rag(question: str) -> str:
-    """Agentic RAG：Agent 自主决定是否检索"""
-    messages = [{"role": "user", "content": question}]
-    system = (
-        "你是一个技术助手。回答技术问题时，如果你确定答案就直接回答；"
-        "如果不确定或需要查询具体信息，使用搜索工具。"
-        "基于搜索结果回答时，明确引用来源。"
-    )
+const toolMap: Record<string, (args: any) => Promise<Record<string, any>>> = {
+  search_knowledge_base: (args) =>
+    searchKnowledgeBase(args.query, args.n_results),
+  search_with_filter: (args) =>
+    searchWithFilter(args.query, args.category),
+};
 
-    for _ in range(5):
-        response = anthropic_client.messages.create(
-            model="claude-sonnet-4-20250514", max_tokens=1024,
-            system=system, tools=tools, messages=messages
-        )
+async function agenticRag(question: string): Promise<string> {
+  /** Agentic RAG：Agent 自主决定是否检索 */
+  const messages: Anthropic.MessageParam[] = [
+    { role: "user", content: question },
+  ];
+  const system =
+    "你是一个技术助手。回答技术问题时，如果你确定答案就直接回答；"
+    + "如果不确定或需要查询具体信息，使用搜索工具。"
+    + "基于搜索结果回答时，明确引用来源。";
 
-        if response.stop_reason == "end_turn":
-            return "".join(b.text for b in response.content if hasattr(b, "text"))
+  for (let i = 0; i < 5; i++) {
+    const response = await anthropicClient.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1024,
+      system,
+      tools,
+      messages,
+    });
 
-        if response.stop_reason == "tool_use":
-            messages.append({"role": "assistant", "content": response.content})
-            results = []
-            for block in response.content:
-                if block.type == "tool_use":
-                    func = tool_map[block.name]
-                    result = func(**block.input)
-                    print(f"  [检索] {block.name}: {block.input.get('query', '')}")
-                    results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": json.dumps(result, ensure_ascii=False)
-                    })
-            messages.append({"role": "user", "content": results})
+    if (response.stop_reason === "end_turn") {
+      return response.content
+        .filter((b): b is Anthropic.TextBlock => b.type === "text")
+        .map((b) => b.text)
+        .join("");
+    }
 
-    return "处理超时"
+    if (response.stop_reason === "tool_use") {
+      messages.push({ role: "assistant", content: response.content });
+      const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
+      for (const block of response.content) {
+        if (block.type === "tool_use") {
+          const func = toolMap[block.name];
+          const result = await func(block.input as any);
+          console.log(
+            `  [检索] ${block.name}: ${(block.input as any).query || ""}`
+          );
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: block.id,
+            content: JSON.stringify(result),
+          });
+        }
+      }
+      messages.push({ role: "user", content: toolResults });
+    }
+  }
 
-# 测试：Agent 会自动判断是否需要检索
-print("=== 不需要检索的问题 ===")
-print(agentic_rag("1+1 等于几？"))
+  return "处理超时";
+}
 
-print("\n=== 需要检索的问题 ===")
-print(agentic_rag("Python 3.12 的 type 语句怎么用？"))
+// 测试：Agent 会自动判断是否需要检索
+console.log("=== 不需要检索的问题 ===");
+console.log(await agenticRag("1+1 等于几？"));
 
-print("\n=== 需要多次检索的问题 ===")
-print(agentic_rag("对比 FastAPI 和 Django 在数据验证方面的差异"))
+console.log("\n=== 需要检索的问题 ===");
+console.log(await agenticRag("Python 3.12 的 type 语句怎么用？"));
+
+console.log("\n=== 需要多次检索的问题 ===");
+console.log(await agenticRag("对比 FastAPI 和 Django 在数据验证方面的差异"));
 ```
 
 ## Self-RAG：自我评估检索质量
 
 Self-RAG 让模型在生成答案之前，先评估检索到的内容是否真的有用：
 
-```python
-"""Self-RAG -- 自我评估检索质量"""
-import anthropic
-import json
+```typescript
+/** Self-RAG -- 自我评估检索质量 */
+import Anthropic from "@anthropic-ai/sdk";
 
-client = anthropic.Anthropic()
+const client = new Anthropic();
 
+class SelfRAG {
+  /** 带自我评估的 RAG 系统 */
+  private search: (query: string) => Promise<string[]>;
 
-class SelfRAG:
-    """带自我评估的 RAG 系统"""
+  constructor(searchFunc: (query: string) => Promise<string[]>) {
+    this.search = searchFunc;
+  }
 
-    def __init__(self, search_func):
-        self.search = search_func  # 检索函数
+  async evaluateRetrieval(
+    query: string,
+    documents: string[]
+  ): Promise<Record<string, any>> {
+    /** 评估检索结果的质量 */
+    const docList = documents
+      .map((d, i) => `[${i + 1}] ${d}`)
+      .join("\n");
 
-    def evaluate_retrieval(self, query: str, documents: list[str]) -> dict:
-        """评估检索结果的质量"""
-        doc_list = "\n".join([f"[{i+1}] {d}" for i, d in enumerate(documents)])
+    const response = await client.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 300,
+      messages: [{
+        role: "user",
+        content: `评估以下检索结果对回答查询的有用程度。
 
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=300,
-            messages=[{"role": "user", "content": f"""评估以下检索结果对回答查询的有用程度。
-
-查询：{query}
+查询：${query}
 
 检索结果：
-{doc_list}
+${docList}
 
 返回 JSON：
-{{
+{
     "overall_relevance": "high/medium/low/none",
     "useful_docs": [1, 3],
     "missing_info": "缺少什么信息",
     "should_retry": true/false,
     "retry_query": "如果需要重试，用什么查询"
-}}"""}]
-        )
+}`,
+      }],
+    });
 
-        text = response.content[0].text.strip()
-        try:
-            if "```" in text:
-                text = text.split("```")[1].replace("json", "").strip()
-            return json.loads(text)
-        except json.JSONDecodeError:
-            return {"overall_relevance": "unknown", "should_retry": False}
+    let text =
+      response.content[0].type === "text"
+        ? response.content[0].text.trim()
+        : "";
+    try {
+      if (text.includes("```")) {
+        text = text.split("```")[1].replace("json", "").trim();
+      }
+      return JSON.parse(text);
+    } catch {
+      return { overall_relevance: "unknown", should_retry: false };
+    }
+  }
 
-    def evaluate_answer(self, query: str, answer: str,
-                        sources: list[str]) -> dict:
-        """评估生成答案的质量（是否有幻觉）"""
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=200,
-            messages=[{"role": "user", "content": f"""评估答案是否完全基于参考来源。
+  async evaluateAnswer(
+    query: string,
+    answer: string,
+    sources: string[]
+  ): Promise<Record<string, any>> {
+    /** 评估生成答案的质量（是否有幻觉） */
+    const response = await client.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 200,
+      messages: [{
+        role: "user",
+        content: `评估答案是否完全基于参考来源。
 
-问题：{query}
-答案：{answer}
-参考来源：{json.dumps(sources, ensure_ascii=False)}
+问题：${query}
+答案：${answer}
+参考来源：${JSON.stringify(sources)}
 
 返回 JSON：
-{{
+{
     "is_supported": true/false,
     "has_hallucination": true/false,
     "confidence": 0.0-1.0,
     "unsupported_claims": ["不支持的说法"]
-}}"""}]
-        )
-        text = response.content[0].text.strip()
-        try:
-            if "```" in text:
-                text = text.split("```")[1].replace("json", "").strip()
-            return json.loads(text)
-        except json.JSONDecodeError:
-            return {"is_supported": True, "confidence": 0.5}
+}`,
+      }],
+    });
 
-    def query(self, question: str, max_retries: int = 2) -> dict:
-        """Self-RAG 完整流程"""
-        current_query = question
+    let text =
+      response.content[0].type === "text"
+        ? response.content[0].text.trim()
+        : "";
+    try {
+      if (text.includes("```")) {
+        text = text.split("```")[1].replace("json", "").trim();
+      }
+      return JSON.parse(text);
+    } catch {
+      return { is_supported: true, confidence: 0.5 };
+    }
+  }
 
-        for attempt in range(max_retries + 1):
-            # 1. 检索
-            docs = self.search(current_query)
-            print(f"[第{attempt+1}轮检索] 查询: {current_query}")
+  async query(
+    question: string,
+    maxRetries: number = 2
+  ): Promise<Record<string, any>> {
+    /** Self-RAG 完整流程 */
+    let currentQuery = question;
 
-            # 2. 评估检索质量
-            eval_result = self.evaluate_retrieval(question, docs)
-            print(f"[评估] 相关性: {eval_result['overall_relevance']}")
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      // 1. 检索
+      const docs = await this.search(currentQuery);
+      console.log(`[第${attempt + 1}轮检索] 查询: ${currentQuery}`);
 
-            if eval_result.get("overall_relevance") == "none" and eval_result.get("should_retry"):
-                current_query = eval_result.get("retry_query", question)
-                print(f"[重试] 新查询: {current_query}")
-                continue
+      // 2. 评估检索质量
+      const evalResult = await this.evaluateRetrieval(question, docs);
+      console.log(`[评估] 相关性: ${evalResult.overall_relevance}`);
 
-            # 3. 过滤有用文档
-            useful_indices = eval_result.get("useful_docs", list(range(1, len(docs)+1)))
-            useful_docs = [docs[i-1] for i in useful_indices if 0 < i <= len(docs)]
+      if (
+        evalResult.overall_relevance === "none" &&
+        evalResult.should_retry
+      ) {
+        currentQuery = evalResult.retry_query || question;
+        console.log(`[重试] 新查询: ${currentQuery}`);
+        continue;
+      }
 
-            # 4. 生成答案
-            context = "\n".join(useful_docs)
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514", max_tokens=500,
-                messages=[{"role": "user", "content": f"""基于参考回答问题。只用参考中的信息。
+      // 3. 过滤有用文档
+      const usefulIndices: number[] =
+        evalResult.useful_docs ||
+        Array.from({ length: docs.length }, (_, i) => i + 1);
+      const usefulDocs = usefulIndices
+        .filter((i) => i > 0 && i <= docs.length)
+        .map((i) => docs[i - 1]);
 
-参考：{context}
-问题：{question}"""}]
-            )
-            answer = response.content[0].text
+      // 4. 生成答案
+      const context = usefulDocs.join("\n");
+      const response = await client.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 500,
+        messages: [{
+          role: "user",
+          content: `基于参考回答问题。只用参考中的信息。
 
-            # 5. 评估答案质量
-            answer_eval = self.evaluate_answer(question, answer, useful_docs)
-            print(f"[答案评估] 置信度: {answer_eval.get('confidence', 'N/A')}")
+参考：${context}
+问题：${question}`,
+        }],
+      });
+      const answer =
+        response.content[0].type === "text" ? response.content[0].text : "";
 
-            return {
-                "answer": answer,
-                "sources": useful_docs,
-                "retrieval_quality": eval_result["overall_relevance"],
-                "answer_confidence": answer_eval.get("confidence", 0),
-                "has_hallucination": answer_eval.get("has_hallucination", False),
-                "attempts": attempt + 1
-            }
+      // 5. 评估答案质量
+      const answerEval = await this.evaluateAnswer(
+        question,
+        answer,
+        usefulDocs
+      );
+      console.log(
+        `[答案评估] 置信度: ${answerEval.confidence ?? "N/A"}`
+      );
 
-        return {"answer": "无法找到足够的信息来回答这个问题。", "attempts": max_retries + 1}
+      return {
+        answer,
+        sources: usefulDocs,
+        retrieval_quality: evalResult.overall_relevance,
+        answer_confidence: answerEval.confidence ?? 0,
+        has_hallucination: answerEval.has_hallucination ?? false,
+        attempts: attempt + 1,
+      };
+    }
+
+    return {
+      answer: "无法找到足够的信息来回答这个问题。",
+      attempts: maxRetries + 1,
+    };
+  }
+}
 ```
 
 ## CRAG：修正性 RAG
 
 CRAG（Corrective RAG）在 Self-RAG 基础上更进一步：如果检索结果不够好，它不只是重试，而是**切换数据源**或**改变策略**：
 
-```python
-"""CRAG -- 修正性 RAG 概念实现"""
+```typescript
+/** CRAG -- 修正性 RAG 概念实现 */
 
-class CorrectiveRAG:
-    """修正性 RAG：根据检索质量动态调整策略"""
+class CorrectiveRAG {
+  /** 修正性 RAG：根据检索质量动态调整策略 */
+  private primarySearch: (query: string) => Promise<string[]>;
+  private webSearch: (query: string) => Promise<string[]>;
+  private generate: (query: string, docs: string[]) => Promise<string>;
 
-    def __init__(self, primary_search, web_search, llm_generate):
-        self.primary_search = primary_search  # 主知识库检索
-        self.web_search = web_search          # 网络搜索（备用）
-        self.generate = llm_generate          # LLM 生成
+  constructor(
+    primarySearch: (query: string) => Promise<string[]>,
+    webSearch: (query: string) => Promise<string[]>,
+    llmGenerate: (query: string, docs: string[]) => Promise<string>
+  ) {
+    this.primarySearch = primarySearch; // 主知识库检索
+    this.webSearch = webSearch;         // 网络搜索（备用）
+    this.generate = llmGenerate;        // LLM 生成
+  }
 
-    def assess_relevance(self, query: str, doc: str) -> str:
-        """评估单个文档的相关性"""
-        # 实际中用 LLM 或分类器
-        # 返回 "correct", "incorrect", "ambiguous"
-        return "correct"  # 简化
+  assessRelevance(query: string, doc: string): string {
+    /** 评估单个文档的相关性 */
+    // 实际中用 LLM 或分类器
+    // 返回 "correct", "incorrect", "ambiguous"
+    return "correct"; // 简化
+  }
 
-    def query(self, question: str) -> dict:
-        # 1. 主检索
-        docs = self.primary_search(question)
+  async query(
+    question: string
+  ): Promise<{ answer: string; strategy: string; sources: string[] }> {
+    // 1. 主检索
+    const docs = await this.primarySearch(question);
 
-        # 2. 逐个评估文档
-        correct_docs = []
-        for doc in docs:
-            relevance = self.assess_relevance(question, doc)
-            if relevance == "correct":
-                correct_docs.append(doc)
+    // 2. 逐个评估文档
+    const correctDocs: string[] = [];
+    for (const doc of docs) {
+      const relevance = this.assessRelevance(question, doc);
+      if (relevance === "correct") {
+        correctDocs.push(doc);
+      }
+    }
 
-        # 3. 根据评估结果决定策略
-        if len(correct_docs) >= 2:
-            # 策略A：足够多的相关文档，直接生成
-            strategy = "direct"
-            final_docs = correct_docs
-        elif len(correct_docs) == 1:
-            # 策略B：部分相关，补充网络搜索
-            strategy = "augmented"
-            web_docs = self.web_search(question)
-            final_docs = correct_docs + web_docs[:2]
-        else:
-            # 策略C：完全不相关，重写查询 + 全网搜索
-            strategy = "web_fallback"
-            final_docs = self.web_search(question)
+    // 3. 根据评估结果决定策略
+    let strategy: string;
+    let finalDocs: string[];
 
-        print(f"[CRAG] 策略: {strategy}, 文档数: {len(final_docs)}")
+    if (correctDocs.length >= 2) {
+      // 策略A：足够多的相关文档，直接生成
+      strategy = "direct";
+      finalDocs = correctDocs;
+    } else if (correctDocs.length === 1) {
+      // 策略B：部分相关，补充网络搜索
+      strategy = "augmented";
+      const webDocs = await this.webSearch(question);
+      finalDocs = [...correctDocs, ...webDocs.slice(0, 2)];
+    } else {
+      // 策略C：完全不相关，重写查询 + 全网搜索
+      strategy = "web_fallback";
+      finalDocs = await this.webSearch(question);
+    }
 
-        # 4. 生成答案
-        answer = self.generate(question, final_docs)
-        return {"answer": answer, "strategy": strategy, "sources": final_docs}
+    console.log(`[CRAG] 策略: ${strategy}, 文档数: ${finalDocs.length}`);
+
+    // 4. 生成答案
+    const answer = await this.generate(question, finalDocs);
+    return { answer, strategy, sources: finalDocs };
+  }
+}
 ```
 
 ## Graph RAG：知识图谱增强检索
@@ -365,34 +461,47 @@ Graph RAG 通过知识图谱的**显式关系结构**解决这些问题：实体
 
 ### 实现示例
 
-以下是一个教学级 Graph RAG 实现，用 `networkx` 构建知识图谱，用 Claude 做实体提取和答案生成：
+以下是一个教学级 Graph RAG 实现，用邻接表构建知识图谱，用 Claude 做实体提取和答案生成：
 
-```python
-"""Graph RAG -- 知识图谱增强的 RAG 系统"""
-import anthropic
-import networkx as nx
-import json
+```typescript
+/**
+ * Graph RAG -- 知识图谱增强的 RAG 系统
+ *
+ * 注：Python 的 networkx 在 TypeScript 中没有直接对等库。
+ * 以下用简单的邻接表 + BFS 实现教学级知识图谱，功能等价于
+ * networkx.MultiDiGraph 的子集。
+ */
+import Anthropic from "@anthropic-ai/sdk";
 
-client = anthropic.Anthropic()
+const client = new Anthropic();
 
+// ============================================================
+// 第一步：从文档中提取实体和关系（用 LLM）
+// ============================================================
 
-# ============================================================
-# 第一步：从文档中提取实体和关系（用 LLM）
-# ============================================================
+interface Triple {
+  subject: string;
+  predicate: string;
+  object: string;
+}
 
-def extract_entities_and_relations(text: str) -> list[dict]:
-    """用 LLM 从文本中提取实体和关系三元组"""
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=1024,
-        messages=[{"role": "user", "content": f"""从以下文本中提取所有实体和它们之间的关系。
+async function extractEntitiesAndRelations(
+  text: string
+): Promise<Triple[]> {
+  /** 用 LLM 从文本中提取实体和关系三元组 */
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 1024,
+    messages: [{
+      role: "user",
+      content: `从以下文本中提取所有实体和它们之间的关系。
 
 文本：
-{text}
+${text}
 
 返回 JSON 数组，每个元素是一个三元组：
 [
-    {{"subject": "实体A", "predicate": "关系", "object": "实体B"}},
+    {"subject": "实体A", "predicate": "关系", "object": "实体B"},
     ...
 ]
 
@@ -400,271 +509,371 @@ def extract_entities_and_relations(text: str) -> list[dict]:
 - subject 和 object 是具体的实体（人名、组织、技术、项目等）
 - predicate 是关系描述（如"负责"、"使用"、"属于"、"依赖"等）
 - 尽量提取所有能识别的关系
-- 只返回 JSON 数组，不要其他内容"""}]
-    )
+- 只返回 JSON 数组，不要其他内容`,
+    }],
+  });
 
-    text_result = response.content[0].text.strip()
-    try:
-        # 处理可能被 markdown 代码块包裹的情况
-        if "```" in text_result:
-            text_result = text_result.split("```")[1].replace("json", "").strip()
-        return json.loads(text_result)
-    except json.JSONDecodeError:
-        return []
+  let textResult =
+    response.content[0].type === "text"
+      ? response.content[0].text.trim()
+      : "";
+  try {
+    // 处理可能被 markdown 代码块包裹的情况
+    if (textResult.includes("```")) {
+      textResult = textResult.split("```")[1].replace("json", "").trim();
+    }
+    return JSON.parse(textResult);
+  } catch {
+    return [];
+  }
+}
 
+// ============================================================
+// 第二步：构建知识图谱
+// ============================================================
 
-# ============================================================
-# 第二步：构建知识图谱
-# ============================================================
+interface Edge {
+  from: string;
+  relation: string;
+  to: string;
+}
 
-class KnowledgeGraph:
-    """基于 networkx 的知识图谱"""
+interface Relation extends Edge {
+  depth: number;
+  is_path?: boolean;
+}
 
-    def __init__(self):
-        self.graph = nx.MultiDiGraph()  # 有向多重图（两个节点间可有多种关系）
-        self.source_texts: dict[str, str] = {}  # 记录每个三元组的来源文本
+class KnowledgeGraph {
+  /** 基于邻接表的知识图谱（等价于 networkx.MultiDiGraph 子集） */
+  private outEdges: Map<string, Edge[]> = new Map();
+  private inEdges: Map<string, Edge[]> = new Map();
+  private nodes: Set<string> = new Set();
+  sourceTexts: Map<string, string> = new Map(); // 记录每个三元组的来源文本
 
-    def add_from_documents(self, documents: list[str]):
-        """从文档列表批量构建图谱"""
-        for i, doc in enumerate(documents):
-            print(f"[构建图谱] 处理文档 {i+1}/{len(documents)}...")
-            triples = extract_entities_and_relations(doc)
+  async addFromDocuments(documents: string[]) {
+    /** 从文档列表批量构建图谱 */
+    for (let i = 0; i < documents.length; i++) {
+      console.log(`[构建图谱] 处理文档 ${i + 1}/${documents.length}...`);
+      const triples = await extractEntitiesAndRelations(documents[i]);
 
-            for triple in triples:
-                subj = triple["subject"]
-                pred = triple["predicate"]
-                obj = triple["object"]
+      for (const triple of triples) {
+        const { subject: subj, predicate: pred, object: obj } = triple;
 
-                # 添加节点（如果不存在）
-                self.graph.add_node(subj, type="entity")
-                self.graph.add_node(obj, type="entity")
+        // 添加节点
+        this.nodes.add(subj);
+        this.nodes.add(obj);
 
-                # 添加带标签的边
-                self.graph.add_edge(subj, obj, relation=pred)
+        // 添加带标签的边
+        const edge: Edge = { from: subj, relation: pred, to: obj };
+        if (!this.outEdges.has(subj)) this.outEdges.set(subj, []);
+        this.outEdges.get(subj)!.push(edge);
+        if (!this.inEdges.has(obj)) this.inEdges.set(obj, []);
+        this.inEdges.get(obj)!.push(edge);
 
-                # 记录来源
-                key = f"{subj}-{pred}-{obj}"
-                self.source_texts[key] = doc
+        // 记录来源
+        const key = `${subj}-${pred}-${obj}`;
+        this.sourceTexts.set(key, documents[i]);
+      }
 
-            print(f"  提取了 {len(triples)} 个三元组")
+      console.log(`  提取了 ${triples.length} 个三元组`);
+    }
 
-        print(f"[图谱完成] {self.graph.number_of_nodes()} 个节点, "
-              f"{self.graph.number_of_edges()} 条边")
+    console.log(
+      `[图谱完成] ${this.nodes.size} 个节点, ` +
+        `${[...this.outEdges.values()].reduce((s, e) => s + e.length, 0)} 条边`
+    );
+  }
 
-    def get_neighbors(self, entity: str, max_depth: int = 2) -> list[dict]:
-        """获取实体的邻居信息（支持多跳）
+  getNeighbors(entity: string, maxDepth: number = 2): Relation[] {
+    /**
+     * 获取实体的邻居信息（支持多跳）
+     * @param entity  起始实体名称
+     * @param maxDepth 最大遍历深度（1=直接关系，2=两跳关系）
+     * @returns 关系三元组列表
+     */
+    if (!this.nodes.has(entity)) return [];
 
-        Args:
-            entity: 起始实体名称
-            max_depth: 最大遍历深度（1=直接关系，2=两跳关系）
+    const relations: Relation[] = [];
+    const visited = new Set<string>();
 
-        Returns:
-            关系三元组列表
-        """
-        if entity not in self.graph:
-            return []
+    // BFS 遍历：从起始实体出发，逐层扩展
+    const queue: [string, number][] = [[entity, 0]]; // [当前节点, 当前深度]
+    visited.add(entity);
 
-        relations = []
-        visited = set()
+    while (queue.length > 0) {
+      const [current, depth] = queue.shift()!;
+      if (depth >= maxDepth) continue;
 
-        # BFS 遍历：从起始实体出发，逐层扩展
-        queue = [(entity, 0)]  # (当前节点, 当前深度)
-        visited.add(entity)
+      // 出边：current -> neighbor
+      for (const edge of this.outEdges.get(current) || []) {
+        relations.push({
+          from: current,
+          relation: edge.relation,
+          to: edge.to,
+          depth: depth + 1,
+        });
+        if (!visited.has(edge.to)) {
+          visited.add(edge.to);
+          queue.push([edge.to, depth + 1]);
+        }
+      }
 
-        while queue:
-            current, depth = queue.pop(0)
-            if depth >= max_depth:
-                continue
+      // 入边：neighbor -> current
+      for (const edge of this.inEdges.get(current) || []) {
+        relations.push({
+          from: edge.from,
+          relation: edge.relation,
+          to: current,
+          depth: depth + 1,
+        });
+        if (!visited.has(edge.from)) {
+          visited.add(edge.from);
+          queue.push([edge.from, depth + 1]);
+        }
+      }
+    }
 
-            # 出边：current -> neighbor
-            for _, neighbor, data in self.graph.out_edges(current, data=True):
-                relations.append({
-                    "from": current,
-                    "relation": data["relation"],
-                    "to": neighbor,
-                    "depth": depth + 1
-                })
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    queue.append((neighbor, depth + 1))
+    return relations;
+  }
 
-            # 入边：neighbor -> current
-            for neighbor, _, data in self.graph.in_edges(current, data=True):
-                relations.append({
-                    "from": neighbor,
-                    "relation": data["relation"],
-                    "to": current,
-                    "depth": depth + 1
-                })
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    queue.append((neighbor, depth + 1))
+  findPath(entityA: string, entityB: string): Edge[] | null {
+    /** 查找两个实体之间的关系路径（BFS 最短路径） */
+    if (!this.nodes.has(entityA) || !this.nodes.has(entityB)) return null;
 
-        return relations
+    // 在无向视图上做 BFS 找最短路径
+    const visited = new Set<string>();
+    const parent = new Map<string, string>();
+    const queue: string[] = [entityA];
+    visited.add(entityA);
 
-    def find_path(self, entity_a: str, entity_b: str) -> list[dict] | None:
-        """查找两个实体之间的关系路径"""
-        if entity_a not in self.graph or entity_b not in self.graph:
-            return None
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (current === entityB) break;
 
-        try:
-            # 在无向视图上找最短路径
-            undirected = self.graph.to_undirected()
-            path_nodes = nx.shortest_path(undirected, entity_a, entity_b)
-        except nx.NetworkXNoPathError:
-            return None
+      // 出边和入边都算邻居（无向遍历）
+      const neighbors: string[] = [];
+      for (const edge of this.outEdges.get(current) || []) {
+        neighbors.push(edge.to);
+      }
+      for (const edge of this.inEdges.get(current) || []) {
+        neighbors.push(edge.from);
+      }
 
-        # 还原路径上每条边的关系
-        path_relations = []
-        for i in range(len(path_nodes) - 1):
-            src, dst = path_nodes[i], path_nodes[i + 1]
-            # 尝试正向边
-            edge_data = self.graph.get_edge_data(src, dst)
-            if edge_data:
-                first_edge = list(edge_data.values())[0]
-                path_relations.append({
-                    "from": src, "relation": first_edge["relation"], "to": dst
-                })
-            else:
-                # 尝试反向边
-                edge_data = self.graph.get_edge_data(dst, src)
-                if edge_data:
-                    first_edge = list(edge_data.values())[0]
-                    path_relations.append({
-                        "from": dst, "relation": first_edge["relation"], "to": src
-                    })
+      for (const neighbor of neighbors) {
+        if (!visited.has(neighbor)) {
+          visited.add(neighbor);
+          parent.set(neighbor, current);
+          queue.push(neighbor);
+        }
+      }
+    }
 
-        return path_relations
+    if (!parent.has(entityB) && entityA !== entityB) return null;
 
+    // 还原路径
+    const pathNodes: string[] = [];
+    let node = entityB;
+    while (node !== entityA) {
+      pathNodes.unshift(node);
+      node = parent.get(node)!;
+    }
+    pathNodes.unshift(entityA);
 
-# ============================================================
-# 第三步：Graph RAG 检索 + 生成
-# ============================================================
+    // 还原路径上每条边的关系
+    const pathRelations: Edge[] = [];
+    for (let i = 0; i < pathNodes.length - 1; i++) {
+      const src = pathNodes[i];
+      const dst = pathNodes[i + 1];
+      // 尝试正向边
+      const outEdge = (this.outEdges.get(src) || []).find(
+        (e) => e.to === dst
+      );
+      if (outEdge) {
+        pathRelations.push({ from: src, relation: outEdge.relation, to: dst });
+      } else {
+        // 尝试反向边
+        const inEdge = (this.outEdges.get(dst) || []).find(
+          (e) => e.to === src
+        );
+        if (inEdge) {
+          pathRelations.push({
+            from: dst,
+            relation: inEdge.relation,
+            to: src,
+          });
+        }
+      }
+    }
 
-def identify_entities_in_query(query: str, known_entities: list[str]) -> list[str]:
-    """识别查询中提到的实体"""
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=200,
-        messages=[{"role": "user", "content": f"""从查询中识别与已知实体匹配的实体名称。
+    return pathRelations;
+  }
 
-查询：{query}
-已知实体：{json.dumps(known_entities, ensure_ascii=False)}
+  getAllNodes(): string[] {
+    return [...this.nodes];
+  }
+}
 
-返回 JSON 数组，只包含在查询中出现或被提及的实体名。只返回 JSON 数组。"""}]
-    )
-    text = response.content[0].text.strip()
-    try:
-        if "```" in text:
-            text = text.split("```")[1].replace("json", "").strip()
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return []
+// ============================================================
+// 第三步：Graph RAG 检索 + 生成
+// ============================================================
 
+async function identifyEntitiesInQuery(
+  query: string,
+  knownEntities: string[]
+): Promise<string[]> {
+  /** 识别查询中提到的实体 */
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 200,
+    messages: [{
+      role: "user",
+      content: `从查询中识别与已知实体匹配的实体名称。
 
-def graph_rag_query(query: str, kg: KnowledgeGraph) -> str:
-    """Graph RAG 完整查询流程"""
-    all_entities = list(kg.graph.nodes())
+查询：${query}
+已知实体：${JSON.stringify(knownEntities)}
 
-    # 1. 识别查询中涉及的实体
-    query_entities = identify_entities_in_query(query, all_entities)
-    print(f"[Graph RAG] 识别到实体: {query_entities}")
+返回 JSON 数组，只包含在查询中出现或被提及的实体名。只返回 JSON 数组。`,
+    }],
+  });
 
-    # 2. 图检索：获取相关子图
-    all_relations = []
-    for entity in query_entities:
-        # 获取每个实体的 2 跳邻居关系
-        neighbors = kg.get_neighbors(entity, max_depth=2)
-        all_relations.extend(neighbors)
+  let text =
+    response.content[0].type === "text"
+      ? response.content[0].text.trim()
+      : "";
+  try {
+    if (text.includes("```")) {
+      text = text.split("```")[1].replace("json", "").trim();
+    }
+    return JSON.parse(text);
+  } catch {
+    return [];
+  }
+}
 
-    # 如果有多个实体，还查找它们之间的路径
-    if len(query_entities) >= 2:
-        for i in range(len(query_entities)):
-            for j in range(i + 1, len(query_entities)):
-                path = kg.find_path(query_entities[i], query_entities[j])
-                if path:
-                    print(f"[Graph RAG] 找到路径: {query_entities[i]} -> {query_entities[j]}")
-                    all_relations.extend(
-                        {**r, "depth": 0, "is_path": True} for r in path
-                    )
+async function graphRagQuery(
+  query: string,
+  kg: KnowledgeGraph
+): Promise<string> {
+  /** Graph RAG 完整查询流程 */
+  const allEntities = kg.getAllNodes();
 
-    # 3. 去重并格式化为上下文
-    seen = set()
-    unique_relations = []
-    for r in all_relations:
-        key = f"{r['from']}-{r['relation']}-{r['to']}"
-        if key not in seen:
-            seen.add(key)
-            unique_relations.append(r)
+  // 1. 识别查询中涉及的实体
+  const queryEntities = await identifyEntitiesInQuery(query, allEntities);
+  console.log(`[Graph RAG] 识别到实体: ${JSON.stringify(queryEntities)}`);
 
-    if not unique_relations:
-        return "未找到相关的知识图谱信息。"
+  // 2. 图检索：获取相关子图
+  const allRelations: Relation[] = [];
+  for (const entity of queryEntities) {
+    // 获取每个实体的 2 跳邻居关系
+    const neighbors = kg.getNeighbors(entity, 2);
+    allRelations.push(...neighbors);
+  }
 
-    # 格式化关系为自然语言上下文
-    context_lines = []
-    for r in unique_relations:
-        context_lines.append(f"- {r['from']} --[{r['relation']}]--> {r['to']}")
+  // 如果有多个实体，还查找它们之间的路径
+  if (queryEntities.length >= 2) {
+    for (let i = 0; i < queryEntities.length; i++) {
+      for (let j = i + 1; j < queryEntities.length; j++) {
+        const path = kg.findPath(queryEntities[i], queryEntities[j]);
+        if (path) {
+          console.log(
+            `[Graph RAG] 找到路径: ${queryEntities[i]} -> ${queryEntities[j]}`
+          );
+          allRelations.push(
+            ...path.map((r) => ({ ...r, depth: 0, is_path: true }))
+          );
+        }
+      }
+    }
+  }
 
-    context = "\n".join(context_lines)
-    print(f"[Graph RAG] 检索到 {len(unique_relations)} 条关系")
+  // 3. 去重并格式化为上下文
+  const seen = new Set<string>();
+  const uniqueRelations: Relation[] = [];
+  for (const r of allRelations) {
+    const key = `${r.from}-${r.relation}-${r.to}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      uniqueRelations.push(r);
+    }
+  }
 
-    # 4. 收集相关的原始文本片段
-    source_snippets = set()
-    for r in unique_relations:
-        key = f"{r['from']}-{r['relation']}-{r['to']}"
-        if key in kg.source_texts:
-            source_snippets.add(kg.source_texts[key])
+  if (uniqueRelations.length === 0) {
+    return "未找到相关的知识图谱信息。";
+  }
 
-    source_context = ""
-    if source_snippets:
-        source_context = "\n\n原始文档片段：\n" + "\n---\n".join(source_snippets)
+  // 格式化关系为自然语言上下文
+  const contextLines = uniqueRelations.map(
+    (r) => `- ${r.from} --[${r.relation}]--> ${r.to}`
+  );
 
-    # 5. LLM 生成最终答案
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=500,
-        messages=[{"role": "user", "content": f"""基于以下知识图谱关系和原始文档回答问题。
+  const context = contextLines.join("\n");
+  console.log(`[Graph RAG] 检索到 ${uniqueRelations.length} 条关系`);
+
+  // 4. 收集相关的原始文本片段
+  const sourceSnippets = new Set<string>();
+  for (const r of uniqueRelations) {
+    const key = `${r.from}-${r.relation}-${r.to}`;
+    const src = kg.sourceTexts.get(key);
+    if (src) sourceSnippets.add(src);
+  }
+
+  let sourceContext = "";
+  if (sourceSnippets.size > 0) {
+    sourceContext =
+      "\n\n原始文档片段：\n" + [...sourceSnippets].join("\n---\n");
+  }
+
+  // 5. LLM 生成最终答案
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 500,
+    messages: [{
+      role: "user",
+      content: `基于以下知识图谱关系和原始文档回答问题。
 
 知识图谱关系：
-{context}
-{source_context}
+${context}
+${sourceContext}
 
-问题：{query}
+问题：${query}
 
-请基于以上信息回答，注意利用关系链路进行推理。如果信息不足以回答，请说明。"""}]
-    )
+请基于以上信息回答，注意利用关系链路进行推理。如果信息不足以回答，请说明。`,
+    }],
+  });
 
-    return response.content[0].text
+  return response.content[0].type === "text" ? response.content[0].text : "";
+}
 
+// ============================================================
+// 运行示例
+// ============================================================
 
-# ============================================================
-# 运行示例
-# ============================================================
+// 示例文档（模拟一个公司的技术团队信息）
+const documents = [
+  "张伟是后端团队的技术负责人，他主导了订单系统的重构项目。后端团队使用 Python 和 FastAPI 框架。",
+  "李娜是前端团队的负责人，前端团队使用 React 和 TypeScript。前端团队与后端团队共同协作开发电商平台。",
+  "订单系统依赖用户服务和支付服务。支付服务由王强负责开发，使用了 Go 语言。",
+  "电商平台是公司的核心产品，由产品部的赵敏负责规划。电商平台包含订单系统、用户系统和推荐系统。",
+  "推荐系统使用机器学习技术，由数据团队的陈磊负责。推荐系统依赖用户行为数据。",
+];
 
-# 示例文档（模拟一个公司的技术团队信息）
-documents = [
-    "张伟是后端团队的技术负责人，他主导了订单系统的重构项目。后端团队使用 Python 和 FastAPI 框架。",
-    "李娜是前端团队的负责人，前端团队使用 React 和 TypeScript。前端团队与后端团队共同协作开发电商平台。",
-    "订单系统依赖用户服务和支付服务。支付服务由王强负责开发，使用了 Go 语言。",
-    "电商平台是公司的核心产品，由产品部的赵敏负责规划。电商平台包含订单系统、用户系统和推荐系统。",
-    "推荐系统使用机器学习技术，由数据团队的陈磊负责。推荐系统依赖用户行为数据。",
-]
+// 构建知识图谱
+const kg = new KnowledgeGraph();
+await kg.addFromDocuments(documents);
 
-# 构建知识图谱
-kg = KnowledgeGraph()
-kg.add_from_documents(documents)
+// 测试：单跳查询（直接关系）
+console.log("\n=== 单跳查询 ===");
+console.log(await graphRagQuery("张伟负责什么项目？", kg));
 
-# 测试：单跳查询（直接关系）
-print("\n=== 单跳查询 ===")
-print(graph_rag_query("张伟负责什么项目？", kg))
+// 测试：多跳查询（需要推理链）
+console.log("\n=== 多跳查询 ===");
+console.log(
+  await graphRagQuery("订单系统依赖的支付服务是谁开发的？用了什么语言？", kg)
+);
 
-# 测试：多跳查询（需要推理链）
-print("\n=== 多跳查询 ===")
-print(graph_rag_query("订单系统依赖的支付服务是谁开发的？用了什么语言？", kg))
-
-# 测试：全局关联查询
-print("\n=== 全局关联查询 ===")
-print(graph_rag_query("电商平台涉及哪些团队和技术栈？", kg))
+// 测试：全局关联查询
+console.log("\n=== 全局关联查询 ===");
+console.log(await graphRagQuery("电商平台涉及哪些团队和技术栈？", kg));
 ```
 
 ### Graph RAG vs 向量 RAG 对比
@@ -698,120 +907,205 @@ Graph RAG 特别适合以下场景：
 
 构建 RAG 系统不难，**知道它好不好**才是难点。评估 RAG 需要从多个维度衡量：
 
-```python
-"""RAG 评估框架"""
-import anthropic
-import json
+```typescript
+/** RAG 评估框架 */
+import Anthropic from "@anthropic-ai/sdk";
 
-client = anthropic.Anthropic()
+const client = new Anthropic();
 
+interface EvalMetrics {
+  relevancy?: number;
+  faithfulness?: number;
+  context_precision?: number;
+  correctness?: number;
+  overall: number;
+}
 
-class RAGEvaluator:
-    """RAG 系统评估器"""
+interface TestCase {
+  question: string;
+  answer: string;
+  retrieved_docs: string[];
+  ground_truth?: string;
+}
 
-    def evaluate_single(self, question: str, answer: str,
-                        retrieved_docs: list[str],
-                        ground_truth: str = None) -> dict:
-        """评估单个 QA 对"""
-        metrics = {}
+class RAGEvaluator {
+  /** RAG 系统评估器 */
 
-        # 1. 相关性（Answer Relevancy）：答案是否回答了问题
-        metrics["relevancy"] = self._score_relevancy(question, answer)
+  async evaluateSingle(
+    question: string,
+    answer: string,
+    retrievedDocs: string[],
+    groundTruth?: string
+  ): Promise<EvalMetrics> {
+    /** 评估单个 QA 对 */
+    const metrics: Record<string, number> = {};
 
-        # 2. 忠实度（Faithfulness）：答案是否基于检索到的文档
-        metrics["faithfulness"] = self._score_faithfulness(answer, retrieved_docs)
+    // 1. 相关性（Answer Relevancy）：答案是否回答了问题
+    metrics.relevancy = await this.scoreRelevancy(question, answer);
 
-        # 3. 上下文精度（Context Precision）：检索到的文档是否相关
-        metrics["context_precision"] = self._score_context_precision(
-            question, retrieved_docs
-        )
+    // 2. 忠实度（Faithfulness）：答案是否基于检索到的文档
+    metrics.faithfulness = await this.scoreFaithfulness(answer, retrievedDocs);
 
-        # 4. 如果有标准答案，计算正确性
-        if ground_truth:
-            metrics["correctness"] = self._score_correctness(
-                answer, ground_truth
-            )
+    // 3. 上下文精度（Context Precision）：检索到的文档是否相关
+    metrics.context_precision = await this.scoreContextPrecision(
+      question,
+      retrievedDocs
+    );
 
-        # 总分
-        scores = [v for v in metrics.values() if isinstance(v, (int, float))]
-        metrics["overall"] = sum(scores) / len(scores) if scores else 0
+    // 4. 如果有标准答案，计算正确性
+    if (groundTruth) {
+      metrics.correctness = await this.scoreCorrectness(answer, groundTruth);
+    }
 
-        return metrics
+    // 总分
+    const scores = Object.values(metrics).filter(
+      (v) => typeof v === "number"
+    );
+    metrics.overall =
+      scores.length > 0
+        ? scores.reduce((a, b) => a + b, 0) / scores.length
+        : 0;
 
-    def _score_relevancy(self, question: str, answer: str) -> float:
-        """答案是否切题"""
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514", max_tokens=50,
-            messages=[{"role": "user", "content": f"""评估答案与问题的相关性。
-问题：{question}
-答案：{answer}
-返回 0.0-1.0 的分数，只返回数字。"""}]
-        )
-        try:
-            return float(response.content[0].text.strip())
-        except ValueError:
-            return 0.5
+    return metrics as unknown as EvalMetrics;
+  }
 
-    def _score_faithfulness(self, answer: str, docs: list[str]) -> float:
-        """答案是否忠实于来源文档"""
-        context = "\n".join(docs)
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514", max_tokens=50,
-            messages=[{"role": "user", "content": f"""评估答案是否完全基于参考文档（没有编造信息）。
-参考文档：{context}
-答案：{answer}
-返回 0.0-1.0 的分数，只返回数字。"""}]
-        )
-        try:
-            return float(response.content[0].text.strip())
-        except ValueError:
-            return 0.5
+  private async scoreRelevancy(
+    question: string,
+    answer: string
+  ): Promise<number> {
+    /** 答案是否切题 */
+    const response = await client.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 50,
+      messages: [{
+        role: "user",
+        content: `评估答案与问题的相关性。
+问题：${question}
+答案：${answer}
+返回 0.0-1.0 的分数，只返回数字。`,
+      }],
+    });
+    try {
+      const text =
+        response.content[0].type === "text" ? response.content[0].text.trim() : "";
+      return parseFloat(text);
+    } catch {
+      return 0.5;
+    }
+  }
 
-    def _score_context_precision(self, question: str, docs: list[str]) -> float:
-        """检索到的文档是否与问题相关"""
-        doc_list = "\n".join([f"[{i+1}] {d}" for i, d in enumerate(docs)])
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514", max_tokens=50,
-            messages=[{"role": "user", "content": f"""评估检索到的文档与问题的相关程度。
-问题：{question}
-文档：{doc_list}
-返回 0.0-1.0 的分数，只返回数字。"""}]
-        )
-        try:
-            return float(response.content[0].text.strip())
-        except ValueError:
-            return 0.5
+  private async scoreFaithfulness(
+    answer: string,
+    docs: string[]
+  ): Promise<number> {
+    /** 答案是否忠实于来源文档 */
+    const context = docs.join("\n");
+    const response = await client.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 50,
+      messages: [{
+        role: "user",
+        content: `评估答案是否完全基于参考文档（没有编造信息）。
+参考文档：${context}
+答案：${answer}
+返回 0.0-1.0 的分数，只返回数字。`,
+      }],
+    });
+    try {
+      const text =
+        response.content[0].type === "text" ? response.content[0].text.trim() : "";
+      return parseFloat(text);
+    } catch {
+      return 0.5;
+    }
+  }
 
-    def _score_correctness(self, answer: str, ground_truth: str) -> float:
-        """答案是否正确"""
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514", max_tokens=50,
-            messages=[{"role": "user", "content": f"""对比答案与标准答案，评估正确性。
-标准答案：{ground_truth}
-实际答案：{answer}
-返回 0.0-1.0 的分数，只返回数字。"""}]
-        )
-        try:
-            return float(response.content[0].text.strip())
-        except ValueError:
-            return 0.5
+  private async scoreContextPrecision(
+    question: string,
+    docs: string[]
+  ): Promise<number> {
+    /** 检索到的文档是否与问题相关 */
+    const docList = docs.map((d, i) => `[${i + 1}] ${d}`).join("\n");
+    const response = await client.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 50,
+      messages: [{
+        role: "user",
+        content: `评估检索到的文档与问题的相关程度。
+问题：${question}
+文档：${docList}
+返回 0.0-1.0 的分数，只返回数字。`,
+      }],
+    });
+    try {
+      const text =
+        response.content[0].type === "text" ? response.content[0].text.trim() : "";
+      return parseFloat(text);
+    } catch {
+      return 0.5;
+    }
+  }
 
-    def evaluate_batch(self, test_cases: list[dict]) -> dict:
-        """批量评估"""
-        all_results = []
-        for case in test_cases:
-            result = self.evaluate_single(**case)
-            all_results.append(result)
-            print(f"  Q: {case['question'][:40]}... | 总分: {result['overall']:.2f}")
+  private async scoreCorrectness(
+    answer: string,
+    groundTruth: string
+  ): Promise<number> {
+    /** 答案是否正确 */
+    const response = await client.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 50,
+      messages: [{
+        role: "user",
+        content: `对比答案与标准答案，评估正确性。
+标准答案：${groundTruth}
+实际答案：${answer}
+返回 0.0-1.0 的分数，只返回数字。`,
+      }],
+    });
+    try {
+      const text =
+        response.content[0].type === "text" ? response.content[0].text.trim() : "";
+      return parseFloat(text);
+    } catch {
+      return 0.5;
+    }
+  }
 
-        # 聚合指标
-        avg_metrics = {}
-        for key in all_results[0]:
-            values = [r[key] for r in all_results if isinstance(r.get(key), (int, float))]
-            if values:
-                avg_metrics[f"avg_{key}"] = sum(values) / len(values)
+  async evaluateBatch(
+    testCases: TestCase[]
+  ): Promise<{ individual: EvalMetrics[]; aggregate: Record<string, number> }> {
+    /** 批量评估 */
+    const allResults: EvalMetrics[] = [];
 
-        return {"individual": all_results, "aggregate": avg_metrics}
+    for (const testCase of testCases) {
+      const result = await this.evaluateSingle(
+        testCase.question,
+        testCase.answer,
+        testCase.retrieved_docs,
+        testCase.ground_truth
+      );
+      allResults.push(result);
+      console.log(
+        `  Q: ${testCase.question.slice(0, 40)}... | 总分: ${result.overall.toFixed(2)}`
+      );
+    }
+
+    // 聚合指标
+    const avgMetrics: Record<string, number> = {};
+    const keys = Object.keys(allResults[0]) as (keyof EvalMetrics)[];
+    for (const key of keys) {
+      const values = allResults
+        .map((r) => r[key])
+        .filter((v): v is number => typeof v === "number");
+      if (values.length > 0) {
+        avgMetrics[`avg_${key}`] =
+          values.reduce((a, b) => a + b, 0) / values.length;
+      }
+    }
+
+    return { individual: allResults, aggregate: avgMetrics };
+  }
+}
 ```
 
 ## 小结
@@ -826,7 +1120,7 @@ class RAGEvaluator:
 ## 练习
 
 1. **Agentic RAG**：扩展 agentic_rag 函数，添加"不需要检索时直接回答"的统计，观察不同类型问题的检索率。
-2. **Graph RAG 扩展**：在 KnowledgeGraph 类中实现社区检测（提示：用 `networkx` 的连通分量或 Louvain 算法），将社区摘要作为全局查询的上下文。
+2. **Graph RAG 扩展**：在 KnowledgeGraph 类中实现社区检测（提示：可以用连通分量算法或引入图分析库），将社区摘要作为全局查询的上下文。
 3. **Self-RAG 实验**：构建一个测试集（10 个问题），分别用标准 RAG 和 Self-RAG 回答，对比质量。
 4. **评估实践**：用 RAGEvaluator 评估你在入门篇构建的 RAG 系统，找到最薄弱的环节。
 

@@ -17,22 +17,29 @@
 
 最简单的方式，按字符数切分。
 
-```python
-class FixedSizeChunker:
-    """固定大小分块"""
+```typescript
+class FixedSizeChunker {
+  /** 固定大小分块 */
+  private chunkSize: number;
+  private overlap: number;
 
-    def __init__(self, chunk_size: int = 500, overlap: int = 50):
-        self.chunk_size = chunk_size
-        self.overlap = overlap
+  constructor(chunkSize: number = 500, overlap: number = 50) {
+    this.chunkSize = chunkSize;
+    this.overlap = overlap;
+  }
 
-    def chunk(self, text: str) -> list[str]:
-        chunks = []
-        start = 0
-        while start < len(text):
-            end = start + self.chunk_size
-            chunks.append(text[start:end].strip())
-            start = end - self.overlap
-        return [c for c in chunks if c]
+  chunk(text: string): string[] {
+    const chunks: string[] = [];
+    let start = 0;
+    while (start < text.length) {
+      const end = start + this.chunkSize;
+      const chunk = text.slice(start, end).trim();
+      if (chunk) chunks.push(chunk);
+      start = end - this.overlap;
+    }
+    return chunks;
+  }
+}
 ```
 
 **优点**：简单、可预测。**缺点**：不尊重语义边界，可能在句子中间切断。
@@ -41,51 +48,73 @@ class FixedSizeChunker:
 
 LangChain 的默认策略。按多级分隔符递归分割：先尝试按段落分，段落太长就按句子分，句子太长就按字符分。
 
-```python
-class RecursiveChunker:
-    """递归字符分块"""
+```typescript
+class RecursiveChunker {
+  /** 递归字符分块 */
+  private chunkSize: number;
+  private overlap: number;
+  private separators: string[];
 
-    def __init__(self, chunk_size: int = 500, overlap: int = 50,
-                 separators: list[str] = None):
-        self.chunk_size = chunk_size
-        self.overlap = overlap
-        self.separators = separators or ["\n\n", "\n", "。", "！", "？", ".", " ", ""]
+  constructor(
+    chunkSize: number = 500,
+    overlap: number = 50,
+    separators?: string[]
+  ) {
+    this.chunkSize = chunkSize;
+    this.overlap = overlap;
+    this.separators = separators || ["\n\n", "\n", "。", "！", "？", ".", " ", ""];
+  }
 
-    def chunk(self, text: str) -> list[str]:
-        return self._recursive_split(text, self.separators)
+  chunk(text: string): string[] {
+    return this.recursiveSplit(text, this.separators);
+  }
 
-    def _recursive_split(self, text: str, separators: list[str]) -> list[str]:
-        if len(text) <= self.chunk_size:
-            return [text] if text.strip() else []
+  private recursiveSplit(text: string, separators: string[]): string[] {
+    if (text.length <= this.chunkSize) {
+      return text.trim() ? [text] : [];
+    }
 
-        sep = separators[0] if separators else ""
-        remaining_seps = separators[1:] if len(separators) > 1 else [""]
+    const sep = separators.length > 0 ? separators[0] : "";
+    const remainingSeps = separators.length > 1 ? separators.slice(1) : [""];
 
-        if sep:
-            parts = text.split(sep)
-        else:
-            # 最后的兜底：按字符切
-            return [text[i:i + self.chunk_size] for i in range(0, len(text), self.chunk_size - self.overlap)]
+    if (!sep) {
+      // 最后的兜底：按字符切
+      const result: string[] = [];
+      for (let i = 0; i < text.length; i += this.chunkSize - this.overlap) {
+        result.push(text.slice(i, i + this.chunkSize));
+      }
+      return result;
+    }
 
-        chunks = []
-        current = ""
-        for part in parts:
-            test = current + sep + part if current else part
-            if len(test) <= self.chunk_size:
-                current = test
-            else:
-                if current:
-                    chunks.append(current.strip())
-                # 如果单个 part 太长，用下一级分隔符继续切
-                if len(part) > self.chunk_size:
-                    chunks.extend(self._recursive_split(part, remaining_seps))
-                else:
-                    current = part
+    const parts = text.split(sep);
+    const chunks: string[] = [];
+    let current = "";
 
-        if current.strip():
-            chunks.append(current.strip())
+    for (const part of parts) {
+      const test = current ? current + sep + part : part;
+      if (test.length <= this.chunkSize) {
+        current = test;
+      } else {
+        if (current) {
+          chunks.push(current.trim());
+        }
+        // 如果单个 part 太长，用下一级分隔符继续切
+        if (part.length > this.chunkSize) {
+          chunks.push(...this.recursiveSplit(part, remainingSeps));
+          current = "";
+        } else {
+          current = part;
+        }
+      }
+    }
 
-        return chunks
+    if (current.trim()) {
+      chunks.push(current.trim());
+    }
+
+    return chunks;
+  }
+}
 ```
 
 **优点**：尊重自然段落和句子边界。**缺点**：实现稍复杂，分块大小不均匀。
@@ -94,53 +123,64 @@ class RecursiveChunker:
 
 用 Embedding 检测语义变化点来决定分块边界。当相邻句子的语义相似度突然下降，说明话题发生了转换，这就是一个好的分块点。
 
-```python
-import numpy as np
-from openai import OpenAI
+```typescript
+import OpenAI from "openai";
 
-openai_client = OpenAI()
+const openaiClient = new OpenAI();
 
-class SemanticChunker:
-    """基于语义的分块"""
+class SemanticChunker {
+  /** 基于语义的分块 */
+  private threshold: number;
 
-    def __init__(self, threshold: float = 0.5):
-        self.threshold = threshold  # 相似度阈值，低于此值就分块
+  constructor(threshold: number = 0.5) {
+    this.threshold = threshold; // 相似度阈值，低于此值就分块
+  }
 
-    def chunk(self, text: str) -> list[str]:
-        # 按句子分割
-        sentences = [s.strip() for s in text.replace("。", "。\n").split("\n") if s.strip()]
-        if len(sentences) <= 1:
-            return sentences
+  async chunk(text: string): Promise<string[]> {
+    // 按句子分割
+    const sentences = text
+      .replace(/。/g, "。\n")
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (sentences.length <= 1) return sentences;
 
-        # 获取每个句子的 Embedding
-        response = openai_client.embeddings.create(
-            model="text-embedding-3-small",
-            input=sentences,
-        )
-        embeddings = [item.embedding for item in response.data]
+    // 获取每个句子的 Embedding
+    const response = await openaiClient.embeddings.create({
+      model: "text-embedding-3-small",
+      input: sentences,
+    });
+    const embeddings = response.data.map((item) => item.embedding);
 
-        # 计算相邻句子的相似度
-        chunks = []
-        current_chunk = [sentences[0]]
+    // 计算相邻句子的相似度
+    const chunks: string[] = [];
+    let currentChunk = [sentences[0]];
 
-        for i in range(1, len(sentences)):
-            sim = self._cosine_sim(embeddings[i - 1], embeddings[i])
-            if sim < self.threshold:
-                # 语义断裂，开始新块
-                chunks.append("".join(current_chunk))
-                current_chunk = [sentences[i]]
-            else:
-                current_chunk.append(sentences[i])
+    for (let i = 1; i < sentences.length; i++) {
+      const sim = this.cosineSim(embeddings[i - 1], embeddings[i]);
+      if (sim < this.threshold) {
+        // 语义断裂，开始新块
+        chunks.push(currentChunk.join(""));
+        currentChunk = [sentences[i]];
+      } else {
+        currentChunk.push(sentences[i]);
+      }
+    }
 
-        if current_chunk:
-            chunks.append("".join(current_chunk))
+    if (currentChunk.length > 0) {
+      chunks.push(currentChunk.join(""));
+    }
 
-        return chunks
+    return chunks;
+  }
 
-    @staticmethod
-    def _cosine_sim(a, b):
-        a, b = np.array(a), np.array(b)
-        return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+  private cosineSim(a: number[], b: number[]): number {
+    const dot = a.reduce((sum, ai, i) => sum + ai * b[i], 0);
+    const normA = Math.sqrt(a.reduce((sum, ai) => sum + ai * ai, 0));
+    const normB = Math.sqrt(b.reduce((sum, bi) => sum + bi * bi, 0));
+    return dot / (normA * normB);
+  }
+}
 ```
 
 **优点**：分块边界与语义一致。**缺点**：需要额外的 Embedding API 调用，成本较高。
@@ -149,40 +189,48 @@ class SemanticChunker:
 
 对于 Markdown 格式的文档，利用标题层级来分块。
 
-```python
-class MarkdownChunker:
-    """基于 Markdown 结构的分块"""
+```typescript
+class MarkdownChunker {
+  /** 基于 Markdown 结构的分块 */
 
-    def chunk(self, text: str) -> list[str]:
-        chunks = []
-        current_headers = []
-        current_content = []
+  chunk(text: string): string[] {
+    const chunks: string[] = [];
+    let currentHeaders: string[] = [];
+    let currentContent: string[] = [];
 
-        for line in text.split("\n"):
-            if line.startswith("#"):
-                # 遇到新标题，保存之前的内容
-                if current_content:
-                    header_prefix = " > ".join(current_headers)
-                    content = "\n".join(current_content).strip()
-                    if content:
-                        chunks.append(f"[{header_prefix}]\n{content}")
-                    current_content = []
+    for (const line of text.split("\n")) {
+      if (line.startsWith("#")) {
+        // 遇到新标题，保存之前的内容
+        if (currentContent.length > 0) {
+          const headerPrefix = currentHeaders.join(" > ");
+          const content = currentContent.join("\n").trim();
+          if (content) {
+            chunks.push(`[${headerPrefix}]\n${content}`);
+          }
+          currentContent = [];
+        }
 
-                # 更新标题层级
-                level = len(line) - len(line.lstrip("#"))
-                title = line.lstrip("# ").strip()
-                current_headers = current_headers[:level - 1] + [title]
-            else:
-                current_content.append(line)
+        // 更新标题层级
+        const level = line.length - line.replace(/^#+/, "").length;
+        const title = line.replace(/^#+\s*/, "").trim();
+        currentHeaders = [...currentHeaders.slice(0, level - 1), title];
+      } else {
+        currentContent.push(line);
+      }
+    }
 
-        # 最后一块
-        if current_content:
-            header_prefix = " > ".join(current_headers)
-            content = "\n".join(current_content).strip()
-            if content:
-                chunks.append(f"[{header_prefix}]\n{content}")
+    // 最后一块
+    if (currentContent.length > 0) {
+      const headerPrefix = currentHeaders.join(" > ");
+      const content = currentContent.join("\n").trim();
+      if (content) {
+        chunks.push(`[${headerPrefix}]\n${content}`);
+      }
+    }
 
-        return chunks
+    return chunks;
+  }
+}
 ```
 
 **优点**：保留文档结构信息，检索时附带标题上下文。**缺点**：只适用于 Markdown。
@@ -208,59 +256,65 @@ class MarkdownChunker:
 
 混合检索的思路：**两种方法各搜一遍，然后合并结果**。
 
-```python
-import numpy as np
+```typescript
+class HybridSearch {
+  /** 向量 + 关键词混合检索 */
+  private documents: string[] = [];
+  private vectors: number[][] = [];
 
-class HybridSearch:
-    """向量 + 关键词混合检索"""
+  add(doc: string, vector: number[]) {
+    this.documents.push(doc);
+    this.vectors.push(vector);
+  }
 
-    def __init__(self):
-        self.documents = []
-        self.vectors = []
+  keywordSearch(query: string, topK: number = 5): [number, number][] {
+    /** BM25 风格的关键词检索（简化版） */
+    const queryTerms = new Set(query.toLowerCase().split(/\s+/));
+    const scores: [number, number][] = this.documents.map((doc, i) => {
+      const docTerms = new Set(doc.toLowerCase().split(/\s+/));
+      const overlap = [...queryTerms].filter((t) => docTerms.has(t)).length;
+      return [i, overlap / (queryTerms.size + 1)];
+    });
+    scores.sort((a, b) => b[1] - a[1]);
+    return scores.slice(0, topK);
+  }
 
-    def add(self, doc: str, vector: list[float]):
-        self.documents.append(doc)
-        self.vectors.append(vector)
+  vectorSearch(queryVector: number[], topK: number = 5): [number, number][] {
+    /** 向量检索 */
+    const scores: [number, number][] = this.vectors.map((v, i) => {
+      const dot = queryVector.reduce((sum, qi, j) => sum + qi * v[j], 0);
+      const normQ = Math.sqrt(queryVector.reduce((s, qi) => s + qi * qi, 0));
+      const normV = Math.sqrt(v.reduce((s, vi) => s + vi * vi, 0));
+      return [i, dot / (normQ * normV)];
+    });
+    scores.sort((a, b) => b[1] - a[1]);
+    return scores.slice(0, topK);
+  }
 
-    def keyword_search(self, query: str, top_k: int = 5) -> list[tuple[int, float]]:
-        """BM25 风格的关键词检索（简化版）"""
-        query_terms = set(query.lower().split())
-        scores = []
-        for i, doc in enumerate(self.documents):
-            doc_terms = set(doc.lower().split())
-            overlap = len(query_terms & doc_terms)
-            score = overlap / (len(query_terms) + 1)
-            scores.append((i, score))
-        scores.sort(key=lambda x: -x[1])
-        return scores[:top_k]
+  hybridSearch(
+    query: string,
+    queryVector: number[],
+    topK: number = 5,
+    alpha: number = 0.5
+  ): { index: number; score: number; document: string }[] {
+    /** 混合检索：alpha * 向量分数 + (1-alpha) * 关键词分数 */
+    const kwResults = new Map(this.keywordSearch(query, topK * 2));
+    const vecResults = new Map(this.vectorSearch(queryVector, topK * 2));
 
-    def vector_search(self, query_vector: list[float], top_k: int = 5) -> list[tuple[int, float]]:
-        """向量检索"""
-        q = np.array(query_vector)
-        scores = []
-        for i, v in enumerate(self.vectors):
-            v = np.array(v)
-            sim = float(np.dot(q, v) / (np.linalg.norm(q) * np.linalg.norm(v)))
-            scores.append((i, sim))
-        scores.sort(key=lambda x: -x[1])
-        return scores[:top_k]
+    const allIds = new Set([...kwResults.keys(), ...vecResults.keys()]);
+    const combined: { index: number; score: number; document: string }[] = [];
 
-    def hybrid_search(self, query: str, query_vector: list[float],
-                      top_k: int = 5, alpha: float = 0.5) -> list[tuple[int, float, str]]:
-        """混合检索：alpha * 向量分数 + (1-alpha) * 关键词分数"""
-        kw_results = dict(self.keyword_search(query, top_k * 2))
-        vec_results = dict(self.vector_search(query_vector, top_k * 2))
+    for (const idx of allIds) {
+      const kwScore = kwResults.get(idx) || 0;
+      const vecScore = vecResults.get(idx) || 0;
+      const finalScore = alpha * vecScore + (1 - alpha) * kwScore;
+      combined.push({ index: idx, score: finalScore, document: this.documents[idx] });
+    }
 
-        all_ids = set(kw_results.keys()) | set(vec_results.keys())
-        combined = []
-        for idx in all_ids:
-            kw_score = kw_results.get(idx, 0)
-            vec_score = vec_results.get(idx, 0)
-            final_score = alpha * vec_score + (1 - alpha) * kw_score
-            combined.append((idx, final_score, self.documents[idx]))
-
-        combined.sort(key=lambda x: -x[1])
-        return combined[:top_k]
+    combined.sort((a, b) => b.score - a.score);
+    return combined.slice(0, topK);
+  }
+}
 ```
 
 `alpha` 参数控制两种检索的权重：
@@ -276,70 +330,95 @@ class HybridSearch:
 
 把一个查询改写成多个不同表述，分别检索后合并。
 
-```python
-import anthropic
-import json
+```typescript
+import Anthropic from "@anthropic-ai/sdk";
 
-client = anthropic.Anthropic()
+const client = new Anthropic();
 
-def generate_multi_queries(original_query: str, n: int = 3) -> list[str]:
-    """用 LLM 生成多个查询变体"""
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=512,
-        messages=[{
-            "role": "user",
-            "content": f"""请将以下查询改写为 {n} 个不同的版本。
+async function generateMultiQueries(
+  originalQuery: string,
+  n: number = 3
+): Promise<string[]> {
+  /** 用 LLM 生成多个查询变体 */
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 512,
+    messages: [{
+      role: "user",
+      content: `请将以下查询改写为 ${n} 个不同的版本。
 每个版本应该从不同角度表达相同的信息需求。
 
-原始查询：{original_query}
+原始查询：${originalQuery}
 
-返回 JSON 数组：["查询1", "查询2", "查询3"]"""
-        }]
-    )
-    return json.loads(response.content[0].text)
+返回 JSON 数组：["查询1", "查询2", "查询3"]`,
+    }],
+  });
+  const text = response.content[0].type === "text" ? response.content[0].text : "[]";
+  return JSON.parse(text);
+}
 
-def multi_query_retrieve(query: str, collection, top_k: int = 5) -> list[str]:
-    """多查询检索"""
-    queries = [query] + generate_multi_queries(query, 3)
-    all_docs = {}  # doc_id -> (doc, min_distance)
+async function multiQueryRetrieve(
+  query: string,
+  collection: any,
+  topK: number = 5
+): Promise<string[]> {
+  /** 多查询检索 */
+  const queries = [query, ...(await generateMultiQueries(query, 3))];
+  const allDocs: Record<string, { doc: string; distance: number }> = {};
 
-    for q in queries:
-        results = collection.query(query_texts=[q], n_results=top_k)
-        for doc_id, doc, dist in zip(
-            results["ids"][0], results["documents"][0], results["distances"][0]
-        ):
-            if doc_id not in all_docs or dist < all_docs[doc_id][1]:
-                all_docs[doc_id] = (doc, dist)
+  for (const q of queries) {
+    const results = await collection.query({ queryTexts: [q], nResults: topK });
+    const ids: string[] = results.ids[0];
+    const docs: string[] = results.documents[0];
+    const dists: number[] = results.distances[0];
 
-    sorted_docs = sorted(all_docs.values(), key=lambda x: x[1])
-    return [doc for doc, _ in sorted_docs[:top_k]]
+    ids.forEach((docId, i) => {
+      if (!(docId in allDocs) || dists[i] < allDocs[docId].distance) {
+        allDocs[docId] = { doc: docs[i], distance: dists[i] };
+      }
+    });
+  }
+
+  return Object.values(allDocs)
+    .sort((a, b) => a.distance - b.distance)
+    .slice(0, topK)
+    .map((item) => item.doc);
+}
 ```
 
 ### HyDE（Hypothetical Document Embeddings）
 
 先让 LLM 生成一个"假想的理想回答"，然后用这个假想文档的向量去检索。这样做的好处是：假想文档和知识库中的真实文档在形式上更相似（都是陈述句），比问句更容易匹配到。
 
-```python
-def hyde_retrieve(query: str, collection, top_k: int = 5) -> list[str]:
-    """HyDE 检索：用假想文档的向量检索"""
-    # 1. 生成假想文档
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=512,
-        messages=[{
-            "role": "user",
-            "content": f"""请写一段文字，直接回答以下问题。
+```typescript
+async function hydeRetrieve(
+  query: string,
+  collection: any,
+  topK: number = 5
+): Promise<string[]> {
+  /** HyDE 检索：用假想文档的向量检索 */
+  // 1. 生成假想文档
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 512,
+    messages: [{
+      role: "user",
+      content: `请写一段文字，直接回答以下问题。
 不需要标注来源，直接给出信息性的回答。
 
-问题：{query}"""
-        }]
-    )
-    hypothetical_doc = response.content[0].text
+问题：${query}`,
+    }],
+  });
+  const hypotheticalDoc =
+    response.content[0].type === "text" ? response.content[0].text : "";
 
-    # 2. 用假想文档检索（而不是用原始查询）
-    results = collection.query(query_texts=[hypothetical_doc], n_results=top_k)
-    return results["documents"][0]
+  // 2. 用假想文档检索（而不是用原始查询）
+  const results = await collection.query({
+    queryTexts: [hypotheticalDoc],
+    nResults: topK,
+  });
+  return results.documents[0] as string[];
+}
 ```
 
 ::: tip 什么时候用哪种查询改写
@@ -360,71 +439,94 @@ def hyde_retrieve(query: str, collection, top_k: int = 5) -> list[str]:
 
 ### 使用 Cohere Rerank API
 
-```python
-import cohere
+```typescript
+import cohere from "cohere-ai";
 
-co = cohere.Client()
+const co = new cohere.CohereClient();
 
-def rerank_results(query: str, documents: list[str], top_n: int = 5) -> list[dict]:
-    """使用 Cohere Rerank 重排序"""
-    response = co.rerank(
-        model="rerank-multilingual-v3.0",
-        query=query,
-        documents=documents,
-        top_n=top_n,
-    )
-    return [
-        {"document": documents[item.index], "score": item.relevance_score}
-        for item in response.results
-    ]
+async function rerankResults(
+  query: string,
+  documents: string[],
+  topN: number = 5
+): Promise<{ document: string; score: number }[]> {
+  /** 使用 Cohere Rerank 重排序 */
+  const response = await co.rerank({
+    model: "rerank-multilingual-v3.0",
+    query,
+    documents,
+    topN,
+  });
+  return response.results.map((item) => ({
+    document: documents[item.index],
+    score: item.relevanceScore,
+  }));
+}
 ```
 
 ### 使用开源 BGE Reranker
 
-```python
-from sentence_transformers import CrossEncoder
+```typescript
+/**
+ * 使用本地 Reranker 模型（概念代码）
+ *
+ * 注：sentence_transformers 的 CrossEncoder 是 Python 特有库。
+ * 在 TypeScript/Node.js 中可使用 Cohere Rerank API（见上方）或
+ * 通过 ONNX Runtime 加载模型。以下为概念性演示。
+ */
+interface RerankerModel {
+  predict(pairs: [string, string][]): number[];
+}
 
-reranker = CrossEncoder("BAAI/bge-reranker-base")
+function localRerank(
+  reranker: RerankerModel,
+  query: string,
+  documents: string[],
+  topN: number = 5
+): { document: string; score: number }[] {
+  /** 使用本地 Reranker 模型 */
+  const pairs: [string, string][] = documents.map((doc) => [query, doc]);
+  const scores = reranker.predict(pairs);
 
-def local_rerank(query: str, documents: list[str], top_n: int = 5) -> list[dict]:
-    """使用本地 Reranker 模型"""
-    pairs = [[query, doc] for doc in documents]
-    scores = reranker.predict(pairs)
+  const indexedScores = scores
+    .map((score, idx) => ({ idx, score }))
+    .sort((a, b) => b.score - a.score);
 
-    indexed_scores = sorted(enumerate(scores), key=lambda x: -x[1])
-    return [
-        {"document": documents[idx], "score": float(score)}
-        for idx, score in indexed_scores[:top_n]
-    ]
+  return indexedScores.slice(0, topN).map(({ idx, score }) => ({
+    document: documents[idx],
+    score,
+  }));
+}
 ```
 
 ## 检索质量评估
 
 优化检索不能靠感觉，需要量化指标。
 
-```python
-import numpy as np
+```typescript
+function recallAtK(retrievedIds: string[], relevantIds: Set<string>, k: number): number {
+  /** Recall@K：前K个结果中命中了多少相关文档 */
+  const retrievedSet = new Set(retrievedIds.slice(0, k));
+  const hits = [...retrievedSet].filter((id) => relevantIds.has(id)).length;
+  return relevantIds.size > 0 ? hits / relevantIds.size : 0;
+}
 
-def recall_at_k(retrieved_ids: list, relevant_ids: set, k: int) -> float:
-    """Recall@K：前K个结果中命中了多少相关文档"""
-    retrieved_set = set(retrieved_ids[:k])
-    hits = len(retrieved_set & relevant_ids)
-    return hits / len(relevant_ids) if relevant_ids else 0
+function mrr(retrievedIds: string[], relevantIds: Set<string>): number {
+  /** MRR：第一个相关文档出现在第几位 */
+  for (let i = 0; i < retrievedIds.length; i++) {
+    if (relevantIds.has(retrievedIds[i])) {
+      return 1.0 / (i + 1);
+    }
+  }
+  return 0.0;
+}
 
-def mrr(retrieved_ids: list, relevant_ids: set) -> float:
-    """MRR：第一个相关文档出现在第几位"""
-    for i, doc_id in enumerate(retrieved_ids):
-        if doc_id in relevant_ids:
-            return 1.0 / (i + 1)
-    return 0.0
+// 评估示例
+const retrieved = ["doc_3", "doc_1", "doc_7", "doc_2", "doc_5"];
+const relevant = new Set(["doc_1", "doc_2", "doc_4"]);
 
-# 评估示例
-retrieved = ["doc_3", "doc_1", "doc_7", "doc_2", "doc_5"]
-relevant = {"doc_1", "doc_2", "doc_4"}
-
-print(f"Recall@3: {recall_at_k(retrieved, relevant, 3):.2f}")  # 1/3 = 0.33
-print(f"Recall@5: {recall_at_k(retrieved, relevant, 5):.2f}")  # 2/3 = 0.67
-print(f"MRR: {mrr(retrieved, relevant):.2f}")                  # 1/2 = 0.50
+console.log(`Recall@3: ${recallAtK(retrieved, relevant, 3).toFixed(2)}`); // 1/3 = 0.33
+console.log(`Recall@5: ${recallAtK(retrieved, relevant, 5).toFixed(2)}`); // 2/3 = 0.67
+console.log(`MRR: ${mrr(retrieved, relevant).toFixed(2)}`);               // 1/2 = 0.50
 ```
 
 ::: warning 不做评估等于盲人摸象
@@ -435,63 +537,109 @@ print(f"MRR: {mrr(retrieved, relevant):.2f}")                  # 1/2 = 0.50
 
 把所有策略组合成一个统一的检索管道：
 
-```python
-class RetrievalPipeline:
-    """完整的检索流水线：查询改写 → 多路召回 → 重排序"""
+```typescript
+interface CandidateDoc {
+  document: string;
+  distance: number;
+  rerank_score?: number;
+}
 
-    def __init__(self, collection, reranker=None):
-        self.collection = collection
-        self.reranker = reranker
+interface RerankerPredictor {
+  predict(pairs: [string, string][]): number[];
+}
 
-    def retrieve(self, query: str, strategy: str = "basic",
-                 top_k: int = 5, rerank: bool = True) -> list[dict]:
-        """统一检索接口"""
-        # Step 1: 根据策略检索候选（粗排，多取一些）
-        n_candidates = top_k * 3 if rerank else top_k
-        if strategy == "basic":
-            candidates = self._basic(query, n_candidates)
-        elif strategy == "multi_query":
-            candidates = self._multi_query(query, n_candidates)
-        elif strategy == "hyde":
-            candidates = self._hyde(query, n_candidates)
-        else:
-            raise ValueError(f"未知策略: {strategy}")
+class RetrievalPipeline {
+  /** 完整的检索流水线：查询改写 -> 多路召回 -> 重排序 */
+  private collection: any;
+  private reranker?: RerankerPredictor;
 
-        # Step 2: Reranking（精排）
-        if rerank and self.reranker and len(candidates) > top_k:
-            docs = [c["document"] for c in candidates]
-            scores = self.reranker.predict([[query, d] for d in docs])
-            for i, score in enumerate(scores):
-                candidates[i]["rerank_score"] = float(score)
-            candidates.sort(key=lambda x: -x.get("rerank_score", 0))
+  constructor(collection: any, reranker?: RerankerPredictor) {
+    this.collection = collection;
+    this.reranker = reranker;
+  }
 
-        return candidates[:top_k]
+  async retrieve(
+    query: string,
+    strategy: string = "basic",
+    topK: number = 5,
+    rerank: boolean = true
+  ): Promise<CandidateDoc[]> {
+    /** 统一检索接口 */
+    // Step 1: 根据策略检索候选（粗排，多取一些）
+    const nCandidates = rerank ? topK * 3 : topK;
+    let candidates: CandidateDoc[];
 
-    def _basic(self, query, n):
-        results = self.collection.query(query_texts=[query], n_results=n)
-        return [{"document": d, "distance": dist}
-                for d, dist in zip(results["documents"][0], results["distances"][0])]
+    if (strategy === "basic") {
+      candidates = await this.basic(query, nCandidates);
+    } else if (strategy === "multi_query") {
+      candidates = await this.multiQuery(query, nCandidates);
+    } else if (strategy === "hyde") {
+      candidates = await this.hyde(query, nCandidates);
+    } else {
+      throw new Error(`未知策略: ${strategy}`);
+    }
 
-    def _multi_query(self, query, n):
-        queries = [query] + generate_multi_queries(query, 3)
-        all_results = {}
-        for q in queries:
-            results = self.collection.query(query_texts=[q], n_results=n // 2)
-            for doc, dist, doc_id in zip(
-                results["documents"][0], results["distances"][0], results["ids"][0]
-            ):
-                if doc_id not in all_results or dist < all_results[doc_id]["distance"]:
-                    all_results[doc_id] = {"document": doc, "distance": dist}
-        return sorted(all_results.values(), key=lambda x: x["distance"])
+    // Step 2: Reranking（精排）
+    if (rerank && this.reranker && candidates.length > topK) {
+      const docs = candidates.map((c) => c.document);
+      const scores = this.reranker.predict(
+        docs.map((d) => [query, d] as [string, string])
+      );
+      scores.forEach((score, i) => {
+        candidates[i].rerank_score = score;
+      });
+      candidates.sort((a, b) => (b.rerank_score || 0) - (a.rerank_score || 0));
+    }
 
-    def _hyde(self, query, n):
-        hypo = client.messages.create(
-            model="claude-sonnet-4-20250514", max_tokens=512,
-            messages=[{"role": "user", "content": f"请直接回答：{query}"}]
-        ).content[0].text
-        results = self.collection.query(query_texts=[hypo], n_results=n)
-        return [{"document": d, "distance": dist}
-                for d, dist in zip(results["documents"][0], results["distances"][0])]
+    return candidates.slice(0, topK);
+  }
+
+  private async basic(query: string, n: number): Promise<CandidateDoc[]> {
+    const results = await this.collection.query({ queryTexts: [query], nResults: n });
+    return (results.documents[0] as string[]).map((d: string, i: number) => ({
+      document: d,
+      distance: results.distances[0][i],
+    }));
+  }
+
+  private async multiQuery(query: string, n: number): Promise<CandidateDoc[]> {
+    const queries = [query, ...(await generateMultiQueries(query, 3))];
+    const allResults: Record<string, CandidateDoc> = {};
+
+    for (const q of queries) {
+      const results = await this.collection.query({
+        queryTexts: [q],
+        nResults: Math.floor(n / 2),
+      });
+      const docs: string[] = results.documents[0];
+      const dists: number[] = results.distances[0];
+      const ids: string[] = results.ids[0];
+
+      docs.forEach((doc, i) => {
+        const docId = ids[i];
+        if (!(docId in allResults) || dists[i] < allResults[docId].distance) {
+          allResults[docId] = { document: doc, distance: dists[i] };
+        }
+      });
+    }
+
+    return Object.values(allResults).sort((a, b) => a.distance - b.distance);
+  }
+
+  private async hyde(query: string, n: number): Promise<CandidateDoc[]> {
+    const response = await client.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 512,
+      messages: [{ role: "user", content: `请直接回答：${query}` }],
+    });
+    const hypo = response.content[0].type === "text" ? response.content[0].text : "";
+    const results = await this.collection.query({ queryTexts: [hypo], nResults: n });
+    return (results.documents[0] as string[]).map((d: string, i: number) => ({
+      document: d,
+      distance: results.distances[0][i],
+    }));
+  }
+}
 ```
 
 ## 小结

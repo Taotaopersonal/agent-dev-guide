@@ -47,38 +47,44 @@ RAG 的第一个核心技术是 Embedding——把文本转换成一串数字（
 
 为什么要这么做？因为计算机不擅长直接理解"语义相似性"。"苹果"和"水果"在字符层面完全不同，但语义上很接近。Embedding 模型的作用就是把文本映射到一个高维空间，使得**语义相近的文本，向量也相近**。
 
-```python
-"""
-Embedding 基础演示
-运行前：pip install openai numpy
-"""
-from openai import OpenAI
-import numpy as np
+```typescript
+/**
+ * Embedding 基础演示
+ * 运行前：npm install openai
+ */
+import OpenAI from "openai";
 
-openai_client = OpenAI()
+const openaiClient = new OpenAI();
 
-def get_embedding(text: str, model: str = "text-embedding-3-small") -> list[float]:
-    """获取文本的 Embedding 向量"""
-    response = openai_client.embeddings.create(
-        model=model,
-        input=text,
-    )
-    return response.data[0].embedding
+async function getEmbedding(
+  text: string,
+  model: string = "text-embedding-3-small"
+): Promise<number[]> {
+  /** 获取文本的 Embedding 向量 */
+  const response = await openaiClient.embeddings.create({
+    model,
+    input: text,
+  });
+  return response.data[0].embedding;
+}
 
-# 试试看
-vec1 = get_embedding("Python 是一门编程语言")
-vec2 = get_embedding("Java 是一种编程语言")
-vec3 = get_embedding("今天天气真不错")
+// 计算余弦相似度
+function cosineSimilarity(a: number[], b: number[]): number {
+  const dot = a.reduce((sum, ai, i) => sum + ai * b[i], 0);
+  const normA = Math.sqrt(a.reduce((sum, ai) => sum + ai * ai, 0));
+  const normB = Math.sqrt(b.reduce((sum, bi) => sum + bi * bi, 0));
+  return dot / (normA * normB);
+}
 
-print(f"向量维度: {len(vec1)}")  # text-embedding-3-small 输出 1536 维
+// 试试看
+const vec1 = await getEmbedding("Python 是一门编程语言");
+const vec2 = await getEmbedding("Java 是一种编程语言");
+const vec3 = await getEmbedding("今天天气真不错");
 
-# 计算余弦相似度
-def cosine_similarity(a, b):
-    a, b = np.array(a), np.array(b)
-    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+console.log(`向量维度: ${vec1.length}`); // text-embedding-3-small 输出 1536 维
 
-print(f"编程语言 vs 编程语言: {cosine_similarity(vec1, vec2):.4f}")  # 高相似度
-print(f"编程语言 vs 天气: {cosine_similarity(vec1, vec3):.4f}")      # 低相似度
+console.log(`编程语言 vs 编程语言: ${cosineSimilarity(vec1, vec2).toFixed(4)}`); // 高相似度
+console.log(`编程语言 vs 天气: ${cosineSimilarity(vec1, vec3).toFixed(4)}`);     // 低相似度
 ```
 
 关键概念：
@@ -99,74 +105,76 @@ print(f"编程语言 vs 天气: {cosine_similarity(vec1, vec3):.4f}")      # 低
 
 有了向量，需要一个地方存起来，还能高效地搜索。这就是向量数据库的作用。ChromaDB 是最适合入门的选择——安装简单，零配置，API 直观。
 
-```python
-"""
-ChromaDB 入门：构建和检索知识库
-运行前：pip install chromadb
-"""
-import chromadb
-from chromadb.utils import embedding_functions
+```typescript
+/**
+ * ChromaDB 入门：构建和检索知识库
+ * 运行前：npm install chromadb
+ */
+import { ChromaClient, OpenAIEmbeddingFunction } from "chromadb";
 
-# 初始化 ChromaDB（持久化模式，数据存到磁盘）
-client = chromadb.PersistentClient(path="./my_knowledge_base")
+// 初始化 ChromaDB（持久化模式，数据存到磁盘）
+const client = new ChromaClient({ path: "./my_knowledge_base" });
 
-# 使用 OpenAI embedding（也可以用默认的免费 embedding）
-openai_ef = embedding_functions.OpenAIEmbeddingFunction(
-    model_name="text-embedding-3-small",
-)
+// 使用 OpenAI embedding（也可以用默认的免费 embedding）
+const openaiEf = new OpenAIEmbeddingFunction({
+  openai_model_name: "text-embedding-3-small",
+});
 
-# 创建一个集合（类似数据库的表）
-collection = client.get_or_create_collection(
-    name="company_docs",
-    embedding_function=openai_ef,
-    metadata={"hnsw:space": "cosine"},  # 使用余弦距离
-)
+// 创建一个集合（类似数据库的表）
+const collection = await client.getOrCreateCollection({
+  name: "company_docs",
+  embeddingFunction: openaiEf,
+  metadata: { "hnsw:space": "cosine" }, // 使用余弦距离
+});
 
-# === 添加文档 ===
-documents = [
-    "退款政策：购买后7天内可以无条件退款，需提供订单号。",
-    "会员等级：消费满1000元升级为银卡会员，享受9折优惠。",
-    "配送说明：普通快递3-5天送达，顺丰次日达（需加10元）。",
-    "售后服务：产品质量问题30天内免费换货，人为损坏不在保修范围内。",
-    "积分规则：每消费1元获得1积分，积分可在下次购物时抵扣（100积分=1元）。",
-    "营业时间：线下门店周一至周五 9:00-18:00，周末 10:00-17:00。",
-]
+// === 添加文档 ===
+const documents = [
+  "退款政策：购买后7天内可以无条件退款，需提供订单号。",
+  "会员等级：消费满1000元升级为银卡会员，享受9折优惠。",
+  "配送说明：普通快递3-5天送达，顺丰次日达（需加10元）。",
+  "售后服务：产品质量问题30天内免费换货，人为损坏不在保修范围内。",
+  "积分规则：每消费1元获得1积分，积分可在下次购物时抵扣（100积分=1元）。",
+  "营业时间：线下门店周一至周五 9:00-18:00，周末 10:00-17:00。",
+];
 
-collection.add(
-    documents=documents,
-    ids=[f"doc_{i}" for i in range(len(documents))],
-    metadatas=[
-        {"category": "退款"},
-        {"category": "会员"},
-        {"category": "配送"},
-        {"category": "售后"},
-        {"category": "积分"},
-        {"category": "门店"},
-    ],
-)
+await collection.add({
+  documents,
+  ids: documents.map((_, i) => `doc_${i}`),
+  metadatas: [
+    { category: "退款" },
+    { category: "会员" },
+    { category: "配送" },
+    { category: "售后" },
+    { category: "积分" },
+    { category: "门店" },
+  ],
+});
 
-print(f"知识库中共 {collection.count()} 条文档")
+console.log(`知识库中共 ${await collection.count()} 条文档`);
 
-# === 检索 ===
-results = collection.query(
-    query_texts=["我买的东西想退货怎么办"],
-    n_results=3,
-)
+// === 检索 ===
+const results = await collection.query({
+  queryTexts: ["我买的东西想退货怎么办"],
+  nResults: 3,
+});
 
-print("\n检索结果：")
-for doc, dist in zip(results["documents"][0], results["distances"][0]):
-    print(f"  [{dist:.4f}] {doc}")
+console.log("\n检索结果：");
+results.documents[0].forEach((doc, i) => {
+  const dist = results.distances![0][i];
+  console.log(`  [${dist.toFixed(4)}] ${doc}`);
+});
 
-# === 带元数据过滤的检索 ===
-results = collection.query(
-    query_texts=["会员有什么优惠"],
-    n_results=3,
-    where={"category": "会员"},  # 只在"会员"分类中搜索
-)
+// === 带元数据过滤的检索 ===
+const filteredResults = await collection.query({
+  queryTexts: ["会员有什么优惠"],
+  nResults: 3,
+  where: { category: "会员" }, // 只在"会员"分类中搜索
+});
 
-print("\n过滤检索（仅会员类）：")
-for doc in results["documents"][0]:
-    print(f"  {doc}")
+console.log("\n过滤检索（仅会员类）：");
+filteredResults.documents[0].forEach((doc) => {
+  console.log(`  ${doc}`);
+});
 ```
 
 ChromaDB 的核心操作就四个：
@@ -183,127 +191,147 @@ ChromaDB 的核心操作就四个：
 
 现在把所有组件串起来，搭建一个完整的文档问答系统。
 
-```python
-"""
-完整的 RAG 文档问答系统
-运行前：pip install anthropic chromadb openai
-"""
-import anthropic
-import chromadb
-from chromadb.utils import embedding_functions
+```typescript
+/**
+ * 完整的 RAG 文档问答系统
+ * 运行前：npm install @anthropic-ai/sdk chromadb openai
+ */
+import Anthropic from "@anthropic-ai/sdk";
+import { ChromaClient, OpenAIEmbeddingFunction } from "chromadb";
 
-anthropic_client = anthropic.Anthropic()
+const anthropicClient = new Anthropic();
 
-class SimpleRAG:
-    """简单但完整的 RAG 系统"""
+class SimpleRAG {
+  /** 简单但完整的 RAG 系统 */
+  private chroma: ChromaClient;
+  private ef: OpenAIEmbeddingFunction;
+  private collection!: Awaited<ReturnType<ChromaClient["getOrCreateCollection"]>>;
 
-    def __init__(self, collection_name: str = "knowledge_base"):
-        # 向量数据库
-        self.chroma = chromadb.PersistentClient(path="./rag_db")
-        self.ef = embedding_functions.OpenAIEmbeddingFunction(
-            model_name="text-embedding-3-small",
-        )
-        self.collection = self.chroma.get_or_create_collection(
-            name=collection_name,
-            embedding_function=self.ef,
-        )
+  constructor() {
+    this.chroma = new ChromaClient({ path: "./rag_db" });
+    this.ef = new OpenAIEmbeddingFunction({
+      openai_model_name: "text-embedding-3-small",
+    });
+  }
 
-    # === Step 1: 加载文档 ===
-    def load_documents(self, documents: list[str], metadatas: list[dict] = None):
-        """将文档加入知识库"""
-        ids = [f"doc_{self.collection.count() + i}" for i in range(len(documents))]
-        self.collection.add(
-            documents=documents,
-            ids=ids,
-            metadatas=metadatas or [{}] * len(documents),
-        )
-        print(f"已加载 {len(documents)} 条文档，总计 {self.collection.count()} 条")
+  async init(collectionName: string = "knowledge_base") {
+    this.collection = await this.chroma.getOrCreateCollection({
+      name: collectionName,
+      embeddingFunction: this.ef,
+    });
+  }
 
-    # === Step 2: 分块（简单版：按段落分割） ===
-    @staticmethod
-    def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]:
-        """将长文本分成小块"""
-        chunks = []
-        start = 0
-        while start < len(text):
-            end = start + chunk_size
-            chunk = text[start:end]
-            chunks.append(chunk.strip())
-            start = end - overlap  # 有重叠，避免在边界丢失信息
-        return [c for c in chunks if c]  # 过滤空块
+  // === Step 1: 加载文档 ===
+  async loadDocuments(
+    documents: string[],
+    metadatas?: Record<string, any>[]
+  ) {
+    /** 将文档加入知识库 */
+    const count = await this.collection.count();
+    const ids = documents.map((_, i) => `doc_${count + i}`);
+    await this.collection.add({
+      documents,
+      ids,
+      metadatas: metadatas || documents.map(() => ({})),
+    });
+    const newCount = await this.collection.count();
+    console.log(`已加载 ${documents.length} 条文档，总计 ${newCount} 条`);
+  }
 
-    # === Step 3 & 4: 检索 ===
-    def retrieve(self, query: str, top_k: int = 3) -> list[str]:
-        """检索最相关的文档片段"""
-        results = self.collection.query(
-            query_texts=[query],
-            n_results=top_k,
-        )
-        return results["documents"][0]
+  // === Step 2: 分块（简单版：按段落分割） ===
+  static chunkText(
+    text: string,
+    chunkSize: number = 500,
+    overlap: number = 50
+  ): string[] {
+    /** 将长文本分成小块 */
+    const chunks: string[] = [];
+    let start = 0;
+    while (start < text.length) {
+      const end = start + chunkSize;
+      const chunk = text.slice(start, end).trim();
+      if (chunk) chunks.push(chunk);
+      start = end - overlap; // 有重叠，避免在边界丢失信息
+    }
+    return chunks;
+  }
 
-    # === Step 5: 生成回答 ===
-    def answer(self, question: str, top_k: int = 3) -> str:
-        """检索 + 生成：完整的 RAG 流程"""
-        # 检索相关文档
-        relevant_docs = self.retrieve(question, top_k)
+  // === Step 3 & 4: 检索 ===
+  async retrieve(query: string, topK: number = 3): Promise<string[]> {
+    /** 检索最相关的文档片段 */
+    const results = await this.collection.query({
+      queryTexts: [query],
+      nResults: topK,
+    });
+    return results.documents[0] as string[];
+  }
 
-        if not relevant_docs:
-            return "知识库中没有找到相关信息。"
+  // === Step 5: 生成回答 ===
+  async answer(question: string, topK: number = 3): Promise<string> {
+    /** 检索 + 生成：完整的 RAG 流程 */
+    // 检索相关文档
+    const relevantDocs = await this.retrieve(question, topK);
 
-        # 构建上下文
-        context = "\n---\n".join(relevant_docs)
+    if (!relevantDocs.length) {
+      return "知识库中没有找到相关信息。";
+    }
 
-        # 生成回答
-        response = anthropic_client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1024,
-            messages=[{
-                "role": "user",
-                "content": f"""基于以下参考资料回答用户的问题。
+    // 构建上下文
+    const context = relevantDocs.join("\n---\n");
+
+    // 生成回答
+    const response = await anthropicClient.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1024,
+      messages: [{
+        role: "user",
+        content: `基于以下参考资料回答用户的问题。
 如果参考资料中没有相关信息，如实告知用户你不确定，不要编造。
 回答时引用信息来源。
 
 参考资料：
-{context}
+${context}
 
-用户问题：{question}"""
-            }]
-        )
-        return response.content[0].text
+用户问题：${question}`,
+      }],
+    });
+    return response.content[0].type === "text" ? response.content[0].text : "";
+  }
+}
 
+// === 使用示例 ===
+const rag = new SimpleRAG();
+await rag.init();
 
-# === 使用示例 ===
-if __name__ == "__main__":
-    rag = SimpleRAG()
+// 加载公司知识库
+const docs = [
+  "退款政策：购买后7天内可以无条件退款，需提供订单号和支付凭证。超过7天但在30天内，"
+  + "如果产品未拆封可以退款，需扣除10%手续费。超过30天不接受退款。",
 
-    # 加载公司知识库
-    docs = [
-        "退款政策：购买后7天内可以无条件退款，需提供订单号和支付凭证。超过7天但在30天内，"
-        "如果产品未拆封可以退款，需扣除10%手续费。超过30天不接受退款。",
+  "会员体系：普通会员消费满1000元自动升级为银卡会员（9折），满5000元升级为金卡（8.5折），"
+  + "满20000元升级为钻石卡（8折）。会员等级每年1月1日重新计算。",
 
-        "会员体系：普通会员消费满1000元自动升级为银卡会员（9折），满5000元升级为金卡（8.5折），"
-        "满20000元升级为钻石卡（8折）。会员等级每年1月1日重新计算。",
+  "配送方式：支持普通快递（免费，3-5个工作日）、顺丰快递（加10元，次日达）、"
+  + "同城配送（加5元，当日达，仅限北上广深）。订单满199元免运费。",
 
-        "配送方式：支持普通快递（免费，3-5个工作日）、顺丰快递（加10元，次日达）、"
-        "同城配送（加5元，当日达，仅限北上广深）。订单满199元免运费。",
+  "积分规则：每消费1元获得1积分。积分可用于兑换优惠券或直接抵扣（100积分=1元）。"
+  + "积分有效期为获得之日起12个月，过期清零。每笔订单积分抵扣不超过订单金额的20%。",
+];
+await rag.loadDocuments(docs);
 
-        "积分规则：每消费1元获得1积分。积分可用于兑换优惠券或直接抵扣（100积分=1元）。"
-        "积分有效期为获得之日起12个月，过期清零。每笔订单积分抵扣不超过订单金额的20%。",
-    ]
-    rag.load_documents(docs)
+// 问几个问题
+const questions = [
+  "我买了15天了还能退货吗？",
+  "怎样才能成为金卡会员？有什么优惠？",
+  "我在上海，最快什么时候能收到货？",
+  "积分能抵多少钱？会过期吗？",
+];
 
-    # 问几个问题
-    questions = [
-        "我买了15天了还能退货吗？",
-        "怎样才能成为金卡会员？有什么优惠？",
-        "我在上海，最快什么时候能收到货？",
-        "积分能抵多少钱？会过期吗？",
-    ]
-
-    for q in questions:
-        print(f"\n问：{q}")
-        print(f"答：{rag.answer(q)}")
-        print("-" * 60)
+for (const q of questions) {
+  console.log(`\n问：${q}`);
+  console.log(`答：${await rag.answer(q)}`);
+  console.log("-".repeat(60));
+}
 ```
 
 运行这段代码，你会看到 RAG 系统准确地根据知识库内容回答问题——而且不会编造不存在的信息。

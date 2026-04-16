@@ -65,20 +65,20 @@ graph TD
 
     subgraph core["Agent 核心 · 第 5-8 章"]
         E["5 Tool Use TS"] --> F["6 Agent 原理 TS"]
-        F --> G["7 RAG 🐍"]
-        F --> H["8 记忆系统 🐍"]
+        F --> G["7 RAG TS"]
+        F --> H["8 记忆系统 TS"]
     end
 
     subgraph eco["框架与生态 · 第 9-12 章"]
-        I["9 Agent 框架 🐍"] --> J["10 Multi-Agent 🐍"]
-        J --> K["11 评估测试 🐍"]
+        I["9 Agent 框架 TS+🐍"] --> J["10 Multi-Agent TS"]
+        J --> K["11 评估测试 TS"]
         K --> L["12 MCP TS"]
     end
 
     subgraph prod["生产与前沿 · 第 13-16 章"]
-        M["13 安全 🐍"] --> N["14 生产化 🐍"]
-        N --> O["15 性能 🐍"]
-        O --> P["16 前沿 🐍"]
+        M["13 安全 TS"] --> N["14 生产化 TS"]
+        N --> O["15 性能 TS"]
+        O --> P["16 前沿 TS"]
     end
 
     D --> E
@@ -92,7 +92,7 @@ graph TD
     style prod fill:#fce4ec,stroke:#e91e63,stroke-width:2px
 ```
 
-> **TS** = TypeScript，**🐍** = Python。详见下方[语言选择](#语言选择)。
+> **TS** = TypeScript，**TS+🐍** = TypeScript 为主 + Python 框架代码对照，**🐍** = Python。详见下方[语言选择](#语言选择)。
 
 每个章节都有初级/中级/高级三个深度。推荐先横着读完所有初级，再进入中级，最后攻克高级。详见 [学习路线图](/roadmap)。
 
@@ -112,17 +112,16 @@ graph TD
 
 ## 语言选择
 
-本书采用 **TypeScript 优先 + Python 补充** 的双语策略：
+本书采用 **TypeScript 为主** 的策略，所有示例代码均使用 TypeScript（Anthropic TS SDK）：
 
-| 章节 | 语言 | 理由 |
+| 章节 | 语言 | 说明 |
 |------|------|------|
-| 第 2-6 章 | **TypeScript** | API 调用、Tool Use、Agent 核心——用你最熟悉的语言快速上手 |
-| 第 7-11 章 | Python | RAG、记忆、框架、Multi-Agent、评估——生态以 Python 为主 |
-| 第 12 章 | **TypeScript** | MCP 协议——TS SDK 是一等公民，前端场景更多 |
-| 第 13-16 章 | Python | 安全、生产化、性能、前沿——沿用框架生态语言 |
+| 第 2-8 章 | **TypeScript** | LLM 原理、Prompt、API、Tool Use、Agent、RAG、记忆 |
+| 第 9 章 | **TypeScript + Python 对照** | Agent 框架——LangChain/LangGraph/CrewAI 为 Python 框架，保留原始代码并附 TS 等效实现 |
+| 第 10-16 章 | **TypeScript** | Multi-Agent、评估、MCP、安全、生产化、性能、前沿 |
 
-::: tip 为什么不全用一种语言？
-Agent 开发的现实是：**概念理解不挑语言，但框架生态选语言**。LangChain/LangGraph/CrewAI 只有 Python SDK，所以框架章节用 Python；而 API 调用和 MCP 开发，TypeScript 体验同样好甚至更好。两种语言都掌握，求职和实战都更灵活。
+::: tip 为什么第 9 章保留 Python？
+LangChain/LangGraph/CrewAI 只有 Python SDK，这是 Agent 框架生态的现实。第 9 章保留 Python 框架代码作为参考，同时提供 TypeScript 等效实现，让你理解设计模式后能用任何语言复刻。AI 编码时代，**掌握原理比语言更重要**。
 :::
 
 ## 环境准备
@@ -153,17 +152,17 @@ Agent 开发的现实是：**概念理解不挑语言，但框架生态选语言
 ### 快速安装
 
 ```bash
-# TypeScript 环境（第 2-6、12 章）
+# TypeScript 环境（第 2-16 章主要使用）
 mkdir agent-learning && cd agent-learning
 npm init -y
 npm install @anthropic-ai/sdk openai
 npm install -D typescript tsx @types/node
 npx tsx -e "console.log('TypeScript Ready!')"
 
-# Python 环境（第 7-11、13-16 章）
+# Python 环境（第 9 章框架对照 + 第 1 章 Python 基础）
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv init python-agents && cd python-agents
-uv add anthropic openai httpx
+uv add anthropic openai httpx langchain langgraph
 uv run python -c "import anthropic; print('Python Ready!')"
 ```
 
@@ -205,4 +204,4 @@ function fetchData() {  // 同步写法在 Agent 中会阻塞
 
 准备好了吗？让我们从 [第 2 章 · LLM 原理（初级）](/02-llm-fundamentals/beginner) 开始。
 
-如果你对 Python 不熟悉也没关系——第 2-6 章和第 12 章使用 TypeScript，第 1 章会帮你快速了解 Python 基础，为后续框架章节做准备。
+如果你对 Python 不熟悉也没关系——除了第 9 章框架对照保留了 Python 代码，其余所有章节均使用 TypeScript。第 1 章可以在需要阅读框架源码时再回来看。

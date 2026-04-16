@@ -31,59 +31,59 @@
 
 ### 成本计算器
 
-```python
-"""cost_calculator.py — LLM 调用成本计算"""
+```typescript
+/** cost_calculator.ts — LLM 调用成本计算 */
 
-# 2025 年主流模型定价参考（每百万 Token，美元）
-PRICING = {
+// 2025 年主流模型定价参考（每百万 Token，美元）
+const PRICING: Record<string, Record<string, number>> = {
     "claude-opus-4-20250514": {
-        "input": 15.0,
-        "output": 75.0,
-        "cache_write": 18.75,
-        "cache_read": 1.5,
+        input: 15.0,
+        output: 75.0,
+        cache_write: 18.75,
+        cache_read: 1.5,
     },
     "claude-sonnet-4-20250514": {
-        "input": 3.0,
-        "output": 15.0,
-        "cache_write": 3.75,
-        "cache_read": 0.3,
+        input: 3.0,
+        output: 15.0,
+        cache_write: 3.75,
+        cache_read: 0.3,
     },
     "claude-haiku-3-20250414": {
-        "input": 0.25,
-        "output": 1.25,
-        "cache_write": 0.3,
-        "cache_read": 0.03,
+        input: 0.25,
+        output: 1.25,
+        cache_write: 0.3,
+        cache_read: 0.03,
     },
     "gpt-4o": {
-        "input": 2.5,
-        "output": 10.0,
+        input: 2.5,
+        output: 10.0,
     },
     "gpt-4o-mini": {
-        "input": 0.15,
-        "output": 0.6,
+        input: 0.15,
+        output: 0.6,
     },
+};
+
+function calculateCost(
+    model: string,
+    inputTokens: number,
+    outputTokens: number,
+    cacheReadTokens: number = 0,
+    cacheWriteTokens: number = 0,
+): number {
+    /** 计算单次调用成本（美元） */
+    const price = PRICING[model];
+    const cost =
+        (inputTokens - cacheReadTokens) * price.input / 1_000_000
+        + outputTokens * price.output / 1_000_000
+        + cacheReadTokens * (price.cache_read ?? price.input) / 1_000_000
+        + cacheWriteTokens * (price.cache_write ?? price.input) / 1_000_000;
+    return Math.round(cost * 1_000_000) / 1_000_000;
 }
 
-def calculate_cost(
-    model: str,
-    input_tokens: int,
-    output_tokens: int,
-    cache_read_tokens: int = 0,
-    cache_write_tokens: int = 0,
-) -> float:
-    """计算单次调用成本（美元）"""
-    price = PRICING[model]
-    cost = (
-        (input_tokens - cache_read_tokens) * price["input"] / 1_000_000
-        + output_tokens * price["output"] / 1_000_000
-        + cache_read_tokens * price.get("cache_read", price["input"]) / 1_000_000
-        + cache_write_tokens * price.get("cache_write", price["input"]) / 1_000_000
-    )
-    return round(cost, 6)
-
-# 示例
-cost = calculate_cost("claude-sonnet-4-20250514", input_tokens=5000, output_tokens=1000)
-print(f"单次调用成本: ${cost:.4f}")  # $0.0300
+// 示例
+const cost = calculateCost("claude-sonnet-4-20250514", 5000, 1000);
+console.log(`单次调用成本: $${cost.toFixed(4)}`);  // $0.0300
 ```
 
 ::: warning 成本警示
@@ -92,133 +92,135 @@ print(f"单次调用成本: ${cost:.4f}")  # $0.0300
 
 ### 用户级预算控制
 
-```python
-"""cost_tracker.py — 用户级成本追踪与预算控制"""
+```typescript
+/** cost_tracker.ts — 用户级成本追踪与预算控制 */
 
-import time
-from dataclasses import dataclass, field
-from collections import defaultdict
+class CostTracker {
+    /** 用户级别的成本追踪器 */
 
-@dataclass
-class CostTracker:
-    """用户级别的成本追踪器"""
+    private dailyCosts: Map<string, number> = new Map();
+    private monthlyCosts: Map<string, number> = new Map();
 
-    daily_limit_cents: int = 100       # $1.00/天
-    monthly_limit_cents: int = 2000    # $20.00/月
+    constructor(
+        private dailyLimitCents: number = 100,      // $1.00/天
+        private monthlyLimitCents: number = 2000,    // $20.00/月
+    ) {}
 
-    _daily_costs: dict = field(default_factory=lambda: defaultdict(float))
-    _monthly_costs: dict = field(default_factory=lambda: defaultdict(float))
+    record(userId: string, costDollars: number): void {
+        /** 记录一次成本 */
+        const costCents = costDollars * 100;
+        const today = new Date().toISOString().slice(0, 10);     // "YYYY-MM-DD"
+        const month = new Date().toISOString().slice(0, 7);      // "YYYY-MM"
 
-    def record(self, user_id: str, cost_dollars: float):
-        """记录一次成本"""
-        cost_cents = cost_dollars * 100
-        today = time.strftime("%Y-%m-%d")
-        month = time.strftime("%Y-%m")
+        const dailyKey = `${userId}:${today}`;
+        const monthlyKey = `${userId}:${month}`;
+        this.dailyCosts.set(dailyKey, (this.dailyCosts.get(dailyKey) || 0) + costCents);
+        this.monthlyCosts.set(monthlyKey, (this.monthlyCosts.get(monthlyKey) || 0) + costCents);
+    }
 
-        self._daily_costs[f"{user_id}:{today}"] += cost_cents
-        self._monthly_costs[f"{user_id}:{month}"] += cost_cents
+    checkBudget(userId: string): Record<string, unknown> {
+        /** 检查用户是否超出预算 */
+        const today = new Date().toISOString().slice(0, 10);
+        const month = new Date().toISOString().slice(0, 7);
 
-    def check_budget(self, user_id: str) -> dict:
-        """检查用户是否超出预算"""
-        today = time.strftime("%Y-%m-%d")
-        month = time.strftime("%Y-%m")
-
-        daily = self._daily_costs.get(f"{user_id}:{today}", 0)
-        monthly = self._monthly_costs.get(f"{user_id}:{month}", 0)
+        const daily = this.dailyCosts.get(`${userId}:${today}`) || 0;
+        const monthly = this.monthlyCosts.get(`${userId}:${month}`) || 0;
 
         return {
-            "daily_used_cents": round(daily, 2),
-            "daily_limit_cents": self.daily_limit_cents,
-            "daily_remaining_pct": max(0, (1 - daily / self.daily_limit_cents) * 100),
-            "monthly_used_cents": round(monthly, 2),
-            "can_proceed": (
-                daily < self.daily_limit_cents
-                and monthly < self.monthly_limit_cents
-            ),
-            "reason": self._get_block_reason(daily, monthly),
-        }
+            daily_used_cents: Math.round(daily * 100) / 100,
+            daily_limit_cents: this.dailyLimitCents,
+            daily_remaining_pct: Math.max(0, (1 - daily / this.dailyLimitCents) * 100),
+            monthly_used_cents: Math.round(monthly * 100) / 100,
+            can_proceed: daily < this.dailyLimitCents && monthly < this.monthlyLimitCents,
+            reason: this.getBlockReason(daily, monthly),
+        };
+    }
 
-    def _get_block_reason(self, daily: float, monthly: float) -> str | None:
-        if daily >= self.daily_limit_cents:
-            return "已达今日用量上限，请明天再试"
-        if monthly >= self.monthly_limit_cents:
-            return "已达本月用量上限"
-        return None
+    private getBlockReason(daily: number, monthly: number): string | null {
+        if (daily >= this.dailyLimitCents) {
+            return "已达今日用量上限，请明天再试";
+        }
+        if (monthly >= this.monthlyLimitCents) {
+            return "已达本月用量上限";
+        }
+        return null;
+    }
+}
 ```
 
 ## Prompt Caching：节省 80%+ 输入成本
 
 Agent 的每轮 LLM 调用都要发送 System Prompt 和工具定义，这些内容每次都一样。Anthropic 的 Prompt Caching 让你标记这些内容为可缓存，后续请求只需支付缓存读取的费用（仅原价的 10%）。
 
-```python
-"""prompt_caching.py — Prompt Caching 实现"""
+```typescript
+/** prompt_caching.ts — Prompt Caching 实现 */
 
-import anthropic
+import Anthropic from "@anthropic-ai/sdk";
 
-client = anthropic.Anthropic()
+const client = new Anthropic();
 
-# 假设有 20+ 个工具定义和一段长 System Prompt
-SYSTEM_PROMPT = "你是一个专业的数据分析助手..."  # 很长的指令
-TOOLS = [
-    {"name": "search", "description": "搜索文档库...", "input_schema": {}},
-    # ... 20+ 个工具定义
-]
+// 假设有 20+ 个工具定义和一段长 System Prompt
+const SYSTEM_PROMPT = "你是一个专业的数据分析助手...";  // 很长的指令
+const TOOLS: Anthropic.Tool[] = [
+    { name: "search", description: "搜索文档库...", input_schema: { type: "object", properties: {} } },
+    // ... 20+ 个工具定义
+];
 
-response = client.messages.create(
-    model="claude-sonnet-4-20250514",
-    max_tokens=4096,
-    system=[{
-        "type": "text",
-        "text": SYSTEM_PROMPT,
-        "cache_control": {"type": "ephemeral"},  # 标记可缓存
+const response = await client.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 4096,
+    system: [{
+        type: "text",
+        text: SYSTEM_PROMPT,
+        cache_control: { type: "ephemeral" },  // 标记可缓存
     }],
-    tools=[
-        {**tool, "cache_control": {"type": "ephemeral"}}
-        if i == len(TOOLS) - 1 else tool
-        for i, tool in enumerate(TOOLS)
-    ],
-    messages=[{"role": "user", "content": "分析上周的用户增长数据"}],
-)
+    tools: TOOLS.map((tool, i) =>
+        i === TOOLS.length - 1
+            ? { ...tool, cache_control: { type: "ephemeral" as const } }
+            : tool
+    ),
+    messages: [{ role: "user", content: "分析上周的用户增长数据" }],
+});
 
-# 查看缓存命中
-usage = response.usage
-print(f"输入 Token: {usage.input_tokens}")
-print(f"缓存写入: {usage.cache_creation_input_tokens}")
-print(f"缓存读取: {usage.cache_read_input_tokens}")
+// 查看缓存命中
+const usage = response.usage;
+console.log(`输入 Token: ${usage.input_tokens}`);
+console.log(`缓存写入: ${(usage as any).cache_creation_input_tokens}`);
+console.log(`缓存读取: ${(usage as any).cache_read_input_tokens}`);
 ```
 
 ### 缓存节省了多少钱
 
-```python
-"""cache_savings.py — 计算缓存带来的成本节省"""
+```typescript
+/** cache_savings.ts — 计算缓存带来的成本节省 */
 
-def calculate_cache_savings(
-    cacheable_tokens: int,       # System Prompt + 工具定义的 token 数
-    requests_per_hour: int,      # 每小时请求数
-    model: str = "claude-sonnet-4-20250514",
-) -> dict:
-    price = PRICING[model]
+function calculateCacheSavings(
+    cacheableTokens: number,         // System Prompt + 工具定义的 token 数
+    requestsPerHour: number,         // 每小时请求数
+    model: string = "claude-sonnet-4-20250514",
+): Record<string, string> {
+    const price = PRICING[model];
 
-    # 无缓存：每次都按 input 定价
-    no_cache = cacheable_tokens * requests_per_hour * price["input"] / 1_000_000
+    // 无缓存：每次都按 input 定价
+    const noCache = cacheableTokens * requestsPerHour * price.input / 1_000_000;
 
-    # 有缓存：第一次写入 + 后续读取
-    with_cache = (
-        cacheable_tokens * price["cache_write"] / 1_000_000
-        + cacheable_tokens * (requests_per_hour - 1) * price["cache_read"] / 1_000_000
-    )
+    // 有缓存：第一次写入 + 后续读取
+    const withCache =
+        cacheableTokens * price.cache_write / 1_000_000
+        + cacheableTokens * (requestsPerHour - 1) * price.cache_read / 1_000_000;
 
     return {
-        "hourly_without_cache": f"${no_cache:.4f}",
-        "hourly_with_cache": f"${with_cache:.4f}",
-        "savings_pct": f"{(1 - with_cache / no_cache) * 100:.1f}%",
-    }
+        hourly_without_cache: `$${noCache.toFixed(4)}`,
+        hourly_with_cache: `$${withCache.toFixed(4)}`,
+        savings_pct: `${((1 - withCache / noCache) * 100).toFixed(1)}%`,
+    };
+}
 
-# 示例：10000 token 的固定内容，每小时 100 次请求
-print(calculate_cache_savings(10000, 100))
-# {'hourly_without_cache': '$3.0000',
-#  'hourly_with_cache': '$0.3345',
-#  'savings_pct': '88.9%'}
+// 示例：10000 token 的固定内容，每小时 100 次请求
+console.log(calculateCacheSavings(10000, 100));
+// { hourly_without_cache: '$3.0000',
+//   hourly_with_cache: '$0.3345',
+//   savings_pct: '88.9%' }
 ```
 
 ## 模型路由：用对的模型做对的事
@@ -227,172 +229,187 @@ print(calculate_cache_savings(10000, 100))
 
 ### 基于规则的路由（零额外成本）
 
-```python
-"""model_router.py — 成本感知的模型路由"""
+```typescript
+/** model_router.ts — 成本感知的模型路由 */
 
-class RuleBasedRouter:
-    """基于规则的模型路由器——不需要额外的 LLM 调用"""
+class RuleBasedRouter {
+    /** 基于规则的模型路由器——不需要额外的 LLM 调用 */
 
-    SIMPLE_PATTERNS = [
+    private static readonly SIMPLE_PATTERNS = [
         "翻译", "总结", "格式化", "提取", "分类",
         "是否", "对不对", "帮我改一下",
-    ]
-    COMPLEX_PATTERNS = [
+    ];
+    private static readonly COMPLEX_PATTERNS = [
         "写一个完整的", "设计一个系统", "分析", "调试",
         "多步骤", "比较.*优缺点", "为什么",
-    ]
+    ];
 
-    def route(self, message: str, tool_count: int = 0) -> str:
-        msg_lower = message.lower()
-        msg_len = len(message)
+    route(message: string, toolCount: number = 0): string {
+        const msgLower = message.toLowerCase();
+        const msgLen = message.length;
 
-        # 需要工具的任务用 Sonnet
-        if tool_count > 0:
-            return "claude-sonnet-4-20250514"
+        // 需要工具的任务用 Sonnet
+        if (toolCount > 0) {
+            return "claude-sonnet-4-20250514";
+        }
 
-        # 短消息 + 简单模式 -> 便宜模型
-        if msg_len < 100 and any(p in msg_lower for p in self.SIMPLE_PATTERNS):
-            return "claude-haiku-3-20250414"
+        // 短消息 + 简单模式 -> 便宜模型
+        if (msgLen < 100 && RuleBasedRouter.SIMPLE_PATTERNS.some((p) => msgLower.includes(p))) {
+            return "claude-haiku-3-20250414";
+        }
 
-        # 长消息或复杂模式 -> 中等模型
-        if msg_len > 500 or any(p in msg_lower for p in self.COMPLEX_PATTERNS):
-            return "claude-sonnet-4-20250514"
+        // 长消息或复杂模式 -> 中等模型
+        if (msgLen > 500 || RuleBasedRouter.COMPLEX_PATTERNS.some((p) => msgLower.includes(p))) {
+            return "claude-sonnet-4-20250514";
+        }
 
-        return "claude-haiku-3-20250414"  # 默认用便宜的
+        return "claude-haiku-3-20250414";  // 默认用便宜的
+    }
+}
 ```
 
 ### 对话历史压缩
 
 Agent 的上下文会随轮次越来越长。压缩历史消息可以直接减少 Token 消耗：
 
-```python
-"""history_compression.py — 对话历史压缩"""
+```typescript
+/** history_compression.ts — 对话历史压缩 */
 
-import anthropic
+import Anthropic from "@anthropic-ai/sdk";
 
-async def compress_history(
-    messages: list[dict],
-    keep_recent: int = 4,
-) -> list[dict]:
-    """压缩对话历史：保留最近 N 条，之前的压缩为摘要"""
-    if len(messages) <= keep_recent:
-        return messages
+async function compressHistory(
+    messages: Anthropic.MessageParam[],
+    keepRecent: number = 4,
+): Promise<Anthropic.MessageParam[]> {
+    /** 压缩对话历史：保留最近 N 条，之前的压缩为摘要 */
+    if (messages.length <= keepRecent) {
+        return messages;
+    }
 
-    old_messages = messages[:-keep_recent]
-    recent_messages = messages[-keep_recent:]
+    const oldMessages = messages.slice(0, -keepRecent);
+    const recentMessages = messages.slice(-keepRecent);
 
-    # 用小模型生成摘要（便宜）
-    client = anthropic.AsyncAnthropic()
-    summary_response = await client.messages.create(
-        model="claude-haiku-3-20250414",
-        max_tokens=300,
-        messages=[{
-            "role": "user",
-            "content": (
+    // 用小模型生成摘要（便宜）
+    const client = new Anthropic();
+    const summaryResponse = await client.messages.create({
+        model: "claude-haiku-3-20250414",
+        max_tokens: 300,
+        messages: [{
+            role: "user",
+            content:
                 "用2-3句话总结以下对话的关键信息：\n\n"
-                + "\n".join(
-                    f"{m['role']}: {str(m['content'])[:200]}"
-                    for m in old_messages
-                )
-            ),
+                + oldMessages
+                    .map((m) => `${m.role}: ${String(m.content).slice(0, 200)}`)
+                    .join("\n"),
         }],
-    )
-    summary = summary_response.content[0].text
+    });
+    const summary = summaryResponse.content[0].type === "text"
+        ? summaryResponse.content[0].text
+        : "";
 
     return [
-        {"role": "user", "content": f"[对话历史摘要] {summary}"},
-        {"role": "assistant", "content": "好的，我了解之前的讨论内容。"},
-        *recent_messages,
-    ]
+        { role: "user", content: `[对话历史摘要] ${summary}` },
+        { role: "assistant", content: "好的，我了解之前的讨论内容。" },
+        ...recentMessages,
+    ];
+}
 ```
 
 ### 成本感知的完整 Agent
 
 把预算控制、模型路由、成本追踪整合在一起：
 
-```python
-"""cost_aware_agent.py — 成本感知的 Agent"""
+```typescript
+/** cost_aware_agent.ts — 成本感知的 Agent */
 
-import anthropic
+import Anthropic from "@anthropic-ai/sdk";
 
-class CostAwareAgent:
-    """整合预算控制 + 模型路由 + 成本追踪的 Agent"""
+class CostAwareAgent {
+    /** 整合预算控制 + 模型路由 + 成本追踪的 Agent */
 
-    def __init__(self):
-        self.tracker = CostTracker()
-        self.router = RuleBasedRouter()
-        self.client = anthropic.AsyncAnthropic()
+    private tracker = new CostTracker();
+    private router = new RuleBasedRouter();
+    private client = new Anthropic();
 
-    async def chat(self, user_id: str, message: str) -> str:
-        # 1. 预算检查
-        budget = self.tracker.check_budget(user_id)
-        if not budget["can_proceed"]:
-            return budget["reason"]
+    async chat(userId: string, message: string): Promise<string> {
+        // 1. 预算检查
+        const budget = this.tracker.checkBudget(userId);
+        if (!budget.can_proceed) {
+            return budget.reason as string;
+        }
 
-        # 2. 模型路由
-        model = self.router.route(message)
+        // 2. 模型路由
+        const model = this.router.route(message);
 
-        # 3. 执行
-        response = await self.client.messages.create(
-            model=model,
-            max_tokens=2048,
-            messages=[{"role": "user", "content": message}],
-        )
+        // 3. 执行
+        const response = await this.client.messages.create({
+            model,
+            max_tokens: 2048,
+            messages: [{ role: "user", content: message }],
+        });
 
-        # 4. 记录成本
-        cost = calculate_cost(
+        // 4. 记录成本
+        const cost = calculateCost(
             model,
             response.usage.input_tokens,
             response.usage.output_tokens,
-        )
-        self.tracker.record(user_id, cost)
+        );
+        this.tracker.record(userId, cost);
 
-        # 5. 用量提醒
-        new_budget = self.tracker.check_budget(user_id)
-        warning = ""
-        if new_budget["daily_remaining_pct"] < 20:
-            warning = (f"\n\n(提示：今日用量已使用 "
-                       f"{100 - new_budget['daily_remaining_pct']:.0f}%)")
+        // 5. 用量提醒
+        const newBudget = this.tracker.checkBudget(userId);
+        let warning = "";
+        if ((newBudget.daily_remaining_pct as number) < 20) {
+            warning = `\n\n(提示：今日用量已使用 ${(100 - (newBudget.daily_remaining_pct as number)).toFixed(0)}%)`;
+        }
 
-        return response.content[0].text + warning
+        const text = response.content[0].type === "text" ? response.content[0].text : "";
+        return text + warning;
+    }
+}
 ```
 
 ## 灰度发布
 
 新版本的模型或 System Prompt 不应该一下子推给所有用户。灰度发布让你先对小比例用户验证，确认无问题再全量推出：
 
-```python
-"""gray_release.py — 灰度发布控制"""
+```typescript
+/** gray_release.ts — 灰度发布控制 */
 
-import hashlib
+import { createHash } from "crypto";
 
-class GrayRelease:
-    """基于用户 ID 的灰度发布"""
+class GrayRelease {
+    /** 基于用户 ID 的灰度发布 */
 
-    def __init__(self, rollout_percentage: int = 10):
-        self.rollout_percentage = rollout_percentage
+    constructor(private rolloutPercentage: number = 10) {}
 
-    def is_in_experiment(self, user_id: str, experiment: str) -> bool:
-        """判断用户是否在灰度范围内"""
-        hash_input = f"{user_id}:{experiment}"
-        hash_value = int(hashlib.md5(hash_input.encode()).hexdigest(), 16)
-        bucket = hash_value % 100
-        return bucket < self.rollout_percentage
+    isInExperiment(userId: string, experiment: string): boolean {
+        /** 判断用户是否在灰度范围内 */
+        const hashInput = `${userId}:${experiment}`;
+        const hashHex = createHash("md5").update(hashInput).digest("hex");
+        const bucket = parseInt(hashHex.slice(0, 8), 16) % 100;
+        return bucket < this.rolloutPercentage;
+    }
 
-    def get_model(self, user_id: str) -> str:
-        """灰度切换模型版本"""
-        if self.is_in_experiment(user_id, "new_model_v2"):
-            return "claude-sonnet-4-20250514"       # 新版本（灰度测试中）
-        return "claude-haiku-3-20250414"            # 稳定版本
+    getModel(userId: string): string {
+        /** 灰度切换模型版本 */
+        if (this.isInExperiment(userId, "new_model_v2")) {
+            return "claude-sonnet-4-20250514";       // 新版本（灰度测试中）
+        }
+        return "claude-haiku-3-20250414";            // 稳定版本
+    }
 
-    def get_system_prompt(self, user_id: str) -> str:
-        """灰度切换 System Prompt 版本"""
-        if self.is_in_experiment(user_id, "new_prompt_v3"):
-            return "你是专业的数据分析助手。回答要简洁。（v3）"  # 新 Prompt
-        return "你是一个数据分析助手。（v2）"                    # 旧 Prompt
+    getSystemPrompt(userId: string): string {
+        /** 灰度切换 System Prompt 版本 */
+        if (this.isInExperiment(userId, "new_prompt_v3")) {
+            return "你是专业的数据分析助手。回答要简洁。（v3）";  // 新 Prompt
+        }
+        return "你是一个数据分析助手。（v2）";                    // 旧 Prompt
+    }
+}
 
-# 使用：先 10% 用户用新版，观察指标后逐步扩大
-gray = GrayRelease(rollout_percentage=10)
+// 使用：先 10% 用户用新版，观察指标后逐步扩大
+const gray = new GrayRelease(10);
 ```
 
 ## CI/CD 流水线
@@ -414,13 +431,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-node@v4
         with:
-          python-version: "3.11"
-      - run: pip install -r requirements.txt -r requirements-dev.txt
-      - run: pytest tests/ -v --cov=src --cov-report=xml
-      - run: ruff check src/
-      - run: mypy src/
+          node-version: "20"
+      - run: npm ci
+      - run: npm run test -- --coverage
+      - run: npx eslint src/
+      - run: npx tsc --noEmit
 
   build:
     needs: test
@@ -455,77 +472,81 @@ jobs:
 
 ## 健康检查与监控
 
-```python
-"""health_check.py — 多层健康检查"""
+```typescript
+/** health_check.ts — 多层健康检查 */
 
-from fastapi import FastAPI
-from datetime import datetime
-import asyncio
+import express from "express";
+import Anthropic from "@anthropic-ai/sdk";
 
-app = FastAPI()
+const app = express();
 
-class HealthChecker:
-    def __init__(self):
-        self.start_time = datetime.utcnow()
+class HealthChecker {
+    private startTime = new Date();
 
-    async def check_database(self) -> dict:
-        try:
-            async with db_pool.acquire() as conn:
-                await conn.fetchval("SELECT 1")
-            return {"status": "healthy"}
-        except Exception as e:
-            return {"status": "unhealthy", "error": str(e)}
-
-    async def check_redis(self) -> dict:
-        try:
-            await redis_client.ping()
-            return {"status": "healthy"}
-        except Exception as e:
-            return {"status": "unhealthy", "error": str(e)}
-
-    async def check_llm_api(self) -> dict:
-        try:
-            import anthropic
-            client = anthropic.AsyncAnthropic()
-            await asyncio.wait_for(
-                client.messages.create(
-                    model="claude-haiku-3-20250414",
-                    max_tokens=5,
-                    messages=[{"role": "user", "content": "hi"}],
-                ),
-                timeout=10.0,
-            )
-            return {"status": "healthy"}
-        except Exception as e:
-            return {"status": "degraded", "error": str(e)}
-
-    async def full_check(self) -> dict:
-        db, cache, llm = await asyncio.gather(
-            self.check_database(),
-            self.check_redis(),
-            self.check_llm_api(),
-        )
-        all_healthy = all(c["status"] == "healthy" for c in [db, cache, llm])
-        return {
-            "status": "healthy" if all_healthy else "degraded",
-            "uptime_seconds": (
-                datetime.utcnow() - self.start_time
-            ).total_seconds(),
-            "checks": {"database": db, "redis": cache, "llm_api": llm},
+    async checkDatabase(): Promise<Record<string, string>> {
+        try {
+            await dbPool.query("SELECT 1");
+            return { status: "healthy" };
+        } catch (e) {
+            return { status: "unhealthy", error: String(e) };
         }
+    }
 
-checker = HealthChecker()
+    async checkRedis(): Promise<Record<string, string>> {
+        try {
+            await redisClient.ping();
+            return { status: "healthy" };
+        } catch (e) {
+            return { status: "unhealthy", error: String(e) };
+        }
+    }
 
-@app.get("/health")
-async def health():
-    """轻量健康检查（K8s liveness probe）"""
-    return {"status": "ok"}
+    async checkLLMApi(): Promise<Record<string, string>> {
+        try {
+            const client = new Anthropic();
+            await Promise.race([
+                client.messages.create({
+                    model: "claude-haiku-3-20250414",
+                    max_tokens: 5,
+                    messages: [{ role: "user", content: "hi" }],
+                }),
+                new Promise<never>((_, reject) =>
+                    setTimeout(() => reject(new Error("timeout")), 10000)
+                ),
+            ]);
+            return { status: "healthy" };
+        } catch (e) {
+            return { status: "degraded", error: String(e) };
+        }
+    }
 
-@app.get("/health/ready")
-async def readiness():
-    """就绪检查（K8s readiness probe）"""
-    result = await checker.full_check()
-    return result
+    async fullCheck(): Promise<Record<string, unknown>> {
+        const [db, cache, llm] = await Promise.all([
+            this.checkDatabase(),
+            this.checkRedis(),
+            this.checkLLMApi(),
+        ]);
+        const allHealthy = [db, cache, llm].every((c) => c.status === "healthy");
+        return {
+            status: allHealthy ? "healthy" : "degraded",
+            uptime_seconds: (Date.now() - this.startTime.getTime()) / 1000,
+            checks: { database: db, redis: cache, llm_api: llm },
+        };
+    }
+}
+
+const checker = new HealthChecker();
+
+app.get("/health", async (req, res) => {
+    /** 轻量健康检查（K8s liveness probe） */
+    res.json({ status: "ok" });
+});
+
+app.get("/health/ready", async (req, res) => {
+    /** 就绪检查（K8s readiness probe） */
+    const result = await checker.fullCheck();
+    res.json(result);
+});
 ```
 
 ## 小结
@@ -541,7 +562,7 @@ async def readiness():
 
 1. 用 `calculate_cost` 计算你的 Agent 单次任务的平均成本，对比有无 Prompt Caching 的差异
 2. 实现 `RuleBasedRouter`，准备 10 个不同复杂度的问题，验证路由是否合理
-3. 为你的 Agent 设置 CI/CD 流水线，跑通 pytest + docker build + 部署的全流程
+3. 为你的 Agent 设置 CI/CD 流水线，跑通 test + docker build + 部署的全流程
 
 ## 参考资源
 

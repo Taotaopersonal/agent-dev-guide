@@ -18,41 +18,49 @@
 
 ### 单体架构（推荐起步）
 
-```python
-"""monolith.py — 单体架构的 Agent 服务"""
+```typescript
+/** monolith.ts — 单体架构的 Agent 服务 */
 
-from fastapi import FastAPI, WebSocket
-from contextlib import asynccontextmanager
+import express from "express";
+import { WebSocketServer, WebSocket } from "ws";
+import http from "http";
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # 启动时初始化所有组件
-    app.state.agent_runner = AgentRunner()
-    app.state.tool_registry = ToolRegistry()
-    await app.state.tool_registry.initialize()
-    yield
-    await app.state.tool_registry.cleanup()
+const app = express();
+app.use(express.json());
 
-app = FastAPI(lifespan=lifespan)
+// 启动时初始化所有组件
+const agentRunner = new AgentRunner();
+const toolRegistry = new ToolRegistry();
+await toolRegistry.initialize();
 
-@app.post("/api/chat")
-async def chat(request: ChatRequest):
-    response = await app.state.agent_runner.run(
-        message=request.message,
-        conversation_id=request.conversation_id,
-    )
-    return {"response": response}
+// 应用退出时清理
+process.on("SIGTERM", async () => {
+    await toolRegistry.cleanup();
+    process.exit(0);
+});
 
-@app.websocket("/ws/chat")
-async def ws_chat(websocket: WebSocket):
-    await websocket.accept()
-    while True:
-        data = await websocket.receive_json()
-        async for chunk in app.state.agent_runner.stream(
-            message=data["message"],
-        ):
-            await websocket.send_json({"chunk": chunk})
-        await websocket.send_json({"done": True})
+app.post("/api/chat", async (req, res) => {
+    const response = await agentRunner.run({
+        message: req.body.message,
+        conversationId: req.body.conversation_id,
+    });
+    res.json({ response });
+});
+
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server, path: "/ws/chat" });
+
+wss.on("connection", (ws: WebSocket) => {
+    ws.on("message", async (raw) => {
+        const data = JSON.parse(raw.toString());
+        for await (const chunk of agentRunner.stream({ message: data.message })) {
+            ws.send(JSON.stringify({ chunk }));
+        }
+        ws.send(JSON.stringify({ done: true }));
+    });
+});
+
+server.listen(8000);
 ```
 
 ::: warning 架构选型建议
@@ -108,174 +116,193 @@ CREATE INDEX idx_tool_exec_msg ON tool_executions(message_id);
 
 ### 工具执行失败：重试 + 降级
 
-```python
-"""tool_fallback.py — 工具降级策略"""
+```typescript
+/** tool_fallback.ts — 工具降级策略 */
 
-from dataclasses import dataclass
+interface ToolResult {
+    success: boolean;
+    output: string;
+    error?: string;
+}
 
-@dataclass
-class ToolResult:
-    success: bool
-    output: str
-    error: str | None = None
+class ToolExecutor {
+    /** 支持降级的工具执行器 */
 
-class ToolExecutor:
-    """支持降级的工具执行器"""
+    private fallbacks: Record<string, string[]> = {
+        web_search: ["cached_search", "knowledge_base"],
+        database_query: ["cached_query", "static_data"],
+    };
 
-    def __init__(self):
-        self.fallbacks = {
-            "web_search": ["cached_search", "knowledge_base"],
-            "database_query": ["cached_query", "static_data"],
+    async executeWithFallback(
+        toolName: string,
+        toolInput: Record<string, unknown>,
+    ): Promise<ToolResult> {
+        /** 执行工具，失败时逐级降级 */
+        // 尝试主工具
+        const result = await this.tryExecute(toolName, toolInput);
+        if (result.success) return result;
+
+        // 逐个尝试备选方案
+        for (const fallback of this.fallbacks[toolName] || []) {
+            console.log(`[降级] ${toolName} 失败，尝试 ${fallback}`);
+            const fallbackResult = await this.tryExecute(fallback, toolInput);
+            if (fallbackResult.success) {
+                fallbackResult.output = `[降级结果] ${fallbackResult.output}`;
+                return fallbackResult;
+            }
         }
 
-    async def execute_with_fallback(
-        self, tool_name: str, tool_input: dict
-    ) -> ToolResult:
-        """执行工具，失败时逐级降级"""
-        # 尝试主工具
-        result = await self._try_execute(tool_name, tool_input)
-        if result.success:
-            return result
+        return {
+            success: false,
+            output: "",
+            error: `工具 ${toolName} 及所有备选方案均失败`,
+        };
+    }
 
-        # 逐个尝试备选方案
-        for fallback in self.fallbacks.get(tool_name, []):
-            print(f"[降级] {tool_name} 失败，尝试 {fallback}")
-            result = await self._try_execute(fallback, tool_input)
-            if result.success:
-                result.output = f"[降级结果] {result.output}"
-                return result
-
-        return ToolResult(
-            success=False, output="",
-            error=f"工具 {tool_name} 及所有备选方案均失败",
-        )
-
-    async def _try_execute(self, name: str, input_data: dict) -> ToolResult:
-        try:
-            import asyncio
-            output = await asyncio.wait_for(
-                tool_registry.execute(name, input_data), timeout=30.0
-            )
-            return ToolResult(success=True, output=output)
-        except Exception as e:
-            return ToolResult(success=False, output="", error=str(e))
+    private async tryExecute(
+        name: string,
+        inputData: Record<string, unknown>,
+    ): Promise<ToolResult> {
+        try {
+            const output = await Promise.race([
+                toolRegistry.execute(name, inputData),
+                new Promise<never>((_, reject) =>
+                    setTimeout(() => reject(new Error("timeout")), 30000)
+                ),
+            ]);
+            return { success: true, output };
+        } catch (e) {
+            return { success: false, output: "", error: String(e) };
+        }
+    }
+}
 ```
 
 ### Circuit Breaker：防止级联故障
 
 当 LLM API 持续失败时，继续重试只会让情况更糟。熔断器在连续失败达到阈值后"断开电路"，直接拒绝请求：
 
-```python
-"""circuit_breaker.py — 熔断器模式"""
+```typescript
+/** circuit_breaker.ts — 熔断器模式 */
 
-import time
-from enum import Enum
+enum CircuitState {
+    CLOSED = "closed",        // 正常运行
+    OPEN = "open",            // 熔断（拒绝请求）
+    HALF_OPEN = "half_open",  // 试探性恢复
+}
 
-class CircuitState(Enum):
-    CLOSED = "closed"        # 正常运行
-    OPEN = "open"            # 熔断（拒绝请求）
-    HALF_OPEN = "half_open"  # 试探性恢复
+class CircuitBreaker {
+    /** 熔断器：连续失败时暂停请求，等服务恢复 */
 
-class CircuitBreaker:
-    """熔断器：连续失败时暂停请求，等服务恢复"""
+    private state: CircuitState = CircuitState.CLOSED;
+    private failureCount: number = 0;
+    private successCount: number = 0;
+    private lastFailureTime: number = 0;
 
-    def __init__(
-        self,
-        failure_threshold: int = 5,    # 连续失败几次后熔断
-        recovery_timeout: float = 60.0, # 熔断多久后尝试恢复
-        success_threshold: int = 3,     # 恢复期连续成功几次才算恢复
-    ):
-        self.failure_threshold = failure_threshold
-        self.recovery_timeout = recovery_timeout
-        self.success_threshold = success_threshold
-        self.state = CircuitState.CLOSED
-        self.failure_count = 0
-        self.success_count = 0
-        self.last_failure_time = 0.0
+    constructor(
+        private failureThreshold: number = 5,      // 连续失败几次后熔断
+        private recoveryTimeout: number = 60.0,     // 熔断多久后尝试恢复（秒）
+        private successThreshold: number = 3,       // 恢复期连续成功几次才算恢复
+    ) {}
 
-    def can_execute(self) -> bool:
-        if self.state == CircuitState.CLOSED:
-            return True
-        elif self.state == CircuitState.OPEN:
-            if time.time() - self.last_failure_time > self.recovery_timeout:
-                self.state = CircuitState.HALF_OPEN
-                self.success_count = 0
-                return True
-            return False
-        else:  # HALF_OPEN
-            return True
+    canExecute(): boolean {
+        if (this.state === CircuitState.CLOSED) {
+            return true;
+        } else if (this.state === CircuitState.OPEN) {
+            if (Date.now() / 1000 - this.lastFailureTime > this.recoveryTimeout) {
+                this.state = CircuitState.HALF_OPEN;
+                this.successCount = 0;
+                return true;
+            }
+            return false;
+        } else {
+            // HALF_OPEN
+            return true;
+        }
+    }
 
-    def record_success(self):
-        if self.state == CircuitState.HALF_OPEN:
-            self.success_count += 1
-            if self.success_count >= self.success_threshold:
-                self.state = CircuitState.CLOSED
-                self.failure_count = 0
-        else:
-            self.failure_count = 0
+    recordSuccess(): void {
+        if (this.state === CircuitState.HALF_OPEN) {
+            this.successCount++;
+            if (this.successCount >= this.successThreshold) {
+                this.state = CircuitState.CLOSED;
+                this.failureCount = 0;
+            }
+        } else {
+            this.failureCount = 0;
+        }
+    }
 
-    def record_failure(self):
-        self.failure_count += 1
-        self.last_failure_time = time.time()
-        if self.failure_count >= self.failure_threshold:
-            self.state = CircuitState.OPEN
+    recordFailure(): void {
+        this.failureCount++;
+        this.lastFailureTime = Date.now() / 1000;
+        if (this.failureCount >= this.failureThreshold) {
+            this.state = CircuitState.OPEN;
+        }
+    }
+}
 ```
 
 ### Agent 死循环检测
 
 Agent 可能陷入无限循环——反复调用同一工具或在错误中打转：
 
-```python
-"""loop_detector.py — 死循环检测器"""
+```typescript
+/** loop_detector.ts — 死循环检测器 */
 
-class LoopDetector:
-    """检测 Agent 是否陷入死循环"""
+class LoopDetector {
+    /** 检测 Agent 是否陷入死循环 */
 
-    def __init__(
-        self,
-        max_iterations: int = 25,
-        max_same_tool_consecutive: int = 5,
-        max_total_tokens: int = 100000,
-    ):
-        self.max_iterations = max_iterations
-        self.max_same_tool_consecutive = max_same_tool_consecutive
-        self.max_total_tokens = max_total_tokens
-        self.iteration_count = 0
-        self.tool_history: list[str] = []
-        self.total_tokens = 0
+    private iterationCount: number = 0;
+    private toolHistory: string[] = [];
+    private totalTokens: number = 0;
 
-    def check(self, tool_name: str | None = None,
-              tokens_used: int = 0) -> str | None:
-        """返回 None 表示正常，返回字符串表示应中断及原因"""
-        self.iteration_count += 1
-        self.total_tokens += tokens_used
-        if tool_name:
-            self.tool_history.append(tool_name)
+    constructor(
+        private maxIterations: number = 25,
+        private maxSameToolConsecutive: number = 5,
+        private maxTotalTokens: number = 100000,
+    ) {}
 
-        # 检查 1：最大迭代次数
-        if self.iteration_count > self.max_iterations:
-            return f"已达最大迭代次数 ({self.max_iterations})"
+    check(toolName?: string, tokensUsed: number = 0): string | null {
+        /** 返回 null 表示正常，返回字符串表示应中断及原因 */
+        this.iterationCount++;
+        this.totalTokens += tokensUsed;
+        if (toolName) {
+            this.toolHistory.push(toolName);
+        }
 
-        # 检查 2：连续调用同一工具
-        if (tool_name and
-            len(self.tool_history) >= self.max_same_tool_consecutive):
-            recent = self.tool_history[-self.max_same_tool_consecutive:]
-            if len(set(recent)) == 1:
-                return f"连续 {self.max_same_tool_consecutive} 次调用 '{tool_name}'"
+        // 检查 1：最大迭代次数
+        if (this.iterationCount > this.maxIterations) {
+            return `已达最大迭代次数 (${this.maxIterations})`;
+        }
 
-        # 检查 3：Token 用量超限
-        if self.total_tokens > self.max_total_tokens:
-            return f"Token 用量超过限制 ({self.max_total_tokens})"
+        // 检查 2：连续调用同一工具
+        if (toolName && this.toolHistory.length >= this.maxSameToolConsecutive) {
+            const recent = this.toolHistory.slice(-this.maxSameToolConsecutive);
+            if (new Set(recent).size === 1) {
+                return `连续 ${this.maxSameToolConsecutive} 次调用 '${toolName}'`;
+            }
+        }
 
-        # 检查 4：重复模式（如 A→B→A→B 循环）
-        if len(self.tool_history) >= 6:
-            for plen in [2, 3]:
-                pattern = self.tool_history[-plen:]
-                prev = self.tool_history[-2*plen:-plen]
-                if pattern == prev:
-                    return f"检测到重复模式: {pattern}"
+        // 检查 3：Token 用量超限
+        if (this.totalTokens > this.maxTotalTokens) {
+            return `Token 用量超过限制 (${this.maxTotalTokens})`;
+        }
 
-        return None
+        // 检查 4：重复模式（如 A->B->A->B 循环）
+        if (this.toolHistory.length >= 6) {
+            for (const plen of [2, 3]) {
+                const pattern = this.toolHistory.slice(-plen);
+                const prev = this.toolHistory.slice(-2 * plen, -plen);
+                if (JSON.stringify(pattern) === JSON.stringify(prev)) {
+                    return `检测到重复模式: ${JSON.stringify(pattern)}`;
+                }
+            }
+        }
+
+        return null;
+    }
+}
 ```
 
 ## 容器化部署
@@ -284,16 +311,16 @@ class LoopDetector:
 
 ```dockerfile
 # 多阶段构建 —— 最终镜像更小
-FROM python:3.11-slim AS builder
+FROM node:20-slim AS builder
 
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+COPY package*.json .
+RUN npm ci --omit=dev
 
-FROM python:3.11-slim
+FROM node:20-slim
 
 WORKDIR /app
-COPY --from=builder /install /usr/local
+COPY --from=builder /app/node_modules ./node_modules
 COPY . .
 
 # 非 root 用户运行（安全最佳实践）
@@ -303,9 +330,9 @@ USER appuser
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD python -c "import httpx; httpx.get('http://localhost:8000/health')"
+    CMD node -e "fetch('http://localhost:8000/health').then(r => { if (!r.ok) throw r })"
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+CMD ["node", "--import", "tsx", "src/main.ts"]
 ```
 
 ### docker-compose.yml
@@ -389,4 +416,4 @@ docker-compose up -d --scale agent-api=4
 - [Exponential Backoff And Jitter (AWS)](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/) -- 退避策略最佳实践
 - [Docker 官方文档](https://docs.docker.com/) -- 容器化基础
 - [Release It! (Michael Nygard)](https://pragprog.com/titles/mnee2/release-it-second-edition/) -- 生产环境稳定性模式经典
-- [FastAPI Deployment Guide](https://fastapi.tiangolo.com/deployment/) -- 部署最佳实践
+- [Express 官方文档](https://expressjs.com/) -- Node.js Web 框架

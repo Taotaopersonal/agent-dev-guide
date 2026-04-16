@@ -16,90 +16,114 @@
 
 Voyager（2023, NVIDIA）是自主学习 Agent 的里程碑。它在 Minecraft 中展示了三个核心能力：
 
-```python
-class VoyagerAgent:
-    """Voyager 架构的简化实现"""
-    
-    def __init__(self, llm):
-        self.llm = llm
-        self.skill_library = {}      # 技能库：积累的可复用能力
-        self.curriculum = []          # 自动课程：自我设定的学习目标
-        self.experience_log = []      # 经验日志
-    
-    def automatic_curriculum(self, current_state: str) -> str:
-        """自动生成下一个学习目标"""
-        prompt = f"""
-        当前状态: {current_state}
-        已掌握技能: {list(self.skill_library.keys())}
-        
+```typescript
+class VoyagerAgent {
+  /** Voyager 架构的简化实现 */
+
+  private llm: any;
+  private skillLibrary: Record<
+    string,
+    { code: string; description: string; usageCount: number }
+  > = {};
+  private curriculum: string[] = [];
+  private experienceLog: Array<{
+    goal: string;
+    success: boolean;
+    code: string;
+  }> = [];
+
+  constructor(llm: any) {
+    this.llm = llm;
+  }
+
+  automaticCurriculum(currentState: string): string {
+    /** 自动生成下一个学习目标 */
+    const prompt = `
+        当前状态: ${currentState}
+        已掌握技能: ${JSON.stringify(Object.keys(this.skillLibrary))}
+
         请生成一个略高于当前能力的学习目标。
         目标应该是具体的、可验证的。
-        """
-        return self.llm.generate(prompt)
-    
-    def iterative_prompting(self, task: str) -> str:
-        """迭代式代码生成 + 自我修复"""
-        code = self.llm.generate(f"为以下任务生成代码:\n{task}")
-        
-        for attempt in range(3):
-            result = self.execute(code)
-            if result.success:
-                return code
-            
-            # 根据错误反馈修复
-            code = self.llm.generate(f"""
-            代码: {code}
-            错误: {result.error}
+        `;
+    return this.llm.generate(prompt);
+  }
+
+  iterativePrompting(task: string): string {
+    /** 迭代式代码生成 + 自我修复 */
+    let code = this.llm.generate(`为以下任务生成代码:\n${task}`);
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const result = this.execute(code);
+      if (result.success) {
+        return code;
+      }
+
+      // 根据错误反馈修复
+      code = this.llm.generate(`
+            代码: ${code}
+            错误: ${result.error}
             请修复代码。
-            """)
-        
-        return code
-    
-    def add_skill(self, name: str, code: str, description: str):
-        """将成功的代码保存为可复用技能"""
-        self.skill_library[name] = {
-            "code": code,
-            "description": description,
-            "usage_count": 0,
-        }
+            `);
+    }
 
-    def execute(self, code: str):
-        """执行生成的代码并返回结果（需对接具体执行环境）"""
-        # 需要实现：在沙箱中执行 code，返回包含 success 和 error 字段的结果对象
-        raise NotImplementedError
+    return code;
+  }
 
-    def get_state(self) -> str:
-        """获取当前环境状态的描述（需对接具体环境）"""
-        # 需要实现：返回当前环境的状态描述字符串
-        raise NotImplementedError
+  addSkill(name: string, code: string, description: string): void {
+    /** 将成功的代码保存为可复用技能 */
+    this.skillLibrary[name] = {
+      code,
+      description,
+      usageCount: 0,
+    };
+  }
 
-    def find_relevant_skills(self, goal: str) -> list:
-        """从技能库中检索与目标相关的技能"""
-        # 简化实现：基于关键词匹配；生产中可用向量相似度搜索
-        return [
-            v for k, v in self.skill_library.items()
-            if any(word in v["description"] for word in goal.split())
-        ]
+  execute(code: string): { success: boolean; error?: string } {
+    /** 执行生成的代码并返回结果（需对接具体执行环境） */
+    // 需要实现：在沙箱中执行 code，返回包含 success 和 error 字段的结果对象
+    throw new Error("未实现");
+  }
 
-    def run(self):
-        """主循环：设目标 -> 执行 -> 学习 -> 重复"""
-        while True:
-            goal = self.automatic_curriculum(self.get_state())
-            
-            # 检查技能库中是否有可复用的技能
-            relevant_skills = self.find_relevant_skills(goal)
-            
-            code = self.iterative_prompting(goal)
-            result = self.execute(code)
-            
-            if result.success:
-                self.add_skill(goal, code, f"完成: {goal}")
-                
-            self.experience_log.append({
-                "goal": goal,
-                "success": result.success,
-                "code": code,
-            })
+  getState(): string {
+    /** 获取当前环境状态的描述（需对接具体环境） */
+    // 需要实现：返回当前环境的状态描述字符串
+    throw new Error("未实现");
+  }
+
+  findRelevantSkills(
+    goal: string
+  ): Array<{ code: string; description: string; usageCount: number }> {
+    /** 从技能库中检索与目标相关的技能 */
+    // 简化实现：基于关键词匹配；生产中可用向量相似度搜索
+    const words = goal.split(/\s+/);
+    return Object.values(this.skillLibrary).filter((v) =>
+      words.some((word) => v.description.includes(word))
+    );
+  }
+
+  run(): void {
+    /** 主循环：设目标 -> 执行 -> 学习 -> 重复 */
+    while (true) {
+      const goal = this.automaticCurriculum(this.getState());
+
+      // 检查技能库中是否有可复用的技能
+      const relevantSkills = this.findRelevantSkills(goal);
+
+      const code = this.iterativePrompting(goal);
+      const result = this.execute(code);
+
+      if (result.success) {
+        this.addSkill(goal, code, `完成: ${goal}`);
+      }
+
+      this.experienceLog.push({
+        goal,
+        success: result.success,
+        code,
+      });
+    }
+  }
+}
 ```
 
 ::: tip Voyager 的三大创新
@@ -112,47 +136,58 @@ class VoyagerAgent:
 
 Reflexion（2023）让 Agent 从失败中学习：
 
-```python
-class ReflexionAgent:
-    def __init__(self, llm):
-        self.llm = llm
-        self.reflections = []  # 累积的反思经验
+```typescript
+class ReflexionAgent {
+  private llm: any;
+  private reflections: string[] = []; // 累积的反思经验
 
-    def attempt(self, task: str, context: str) -> str:
-        """尝试解决任务（需对接 LLM 生成）"""
-        # 需要实现：将 task + context 发送给 LLM，返回生成的回答
-        return self.llm.generate(f"历史反思:\n{context}\n\n任务: {task}")
+  constructor(llm: any) {
+    this.llm = llm;
+  }
 
-    def evaluate(self, result: str, task: str) -> bool:
-        """评估结果是否正确（需对接具体评估逻辑）"""
-        # 需要实现：可以是规则检查、单元测试或 LLM-as-Judge
-        raise NotImplementedError
+  attempt(task: string, context: string): string {
+    /** 尝试解决任务（需对接 LLM 生成） */
+    // 需要实现：将 task + context 发送给 LLM，返回生成的回答
+    return this.llm.generate(`历史反思:\n${context}\n\n任务: ${task}`);
+  }
 
-    def solve(self, task: str, max_attempts: int = 3) -> str:
-        for attempt in range(max_attempts):
-            # 带上历史反思作为上下文
-            context = "\n".join(self.reflections[-5:])  # 最近5条反思
-            
-            result = self.attempt(task, context)
-            
-            if self.evaluate(result, task):
-                return result
-            
-            # 生成反思
-            reflection = self.llm.generate(f"""
-            任务: {task}
-            我的回答: {result}
+  evaluate(result: string, task: string): boolean {
+    /** 评估结果是否正确（需对接具体评估逻辑） */
+    // 需要实现：可以是规则检查、单元测试或 LLM-as-Judge
+    throw new Error("未实现");
+  }
+
+  solve(task: string, maxAttempts: number = 3): string {
+    let result = "";
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      // 带上历史反思作为上下文
+      const context = this.reflections.slice(-5).join("\n"); // 最近5条反思
+
+      result = this.attempt(task, context);
+
+      if (this.evaluate(result, task)) {
+        return result;
+      }
+
+      // 生成反思
+      const reflection = this.llm.generate(`
+            任务: ${task}
+            我的回答: ${result}
             这个回答是错误的。
-            
+
             请反思：
             1. 哪里出了问题？
             2. 正确的思路应该是什么？
             3. 下次遇到类似问题应该注意什么？
-            """)
-            
-            self.reflections.append(reflection)
-        
-        return result
+            `);
+
+      this.reflections.push(reflection);
+    }
+
+    return result;
+  }
+}
 ```
 
 ## Agent OS：操作系统级的 Agent 管理
@@ -161,89 +196,106 @@ class ReflexionAgent:
 
 ### 核心组件
 
-```python
-from enum import Flag, auto
-from dataclasses import dataclass
-from typing import Optional
-import asyncio
-from datetime import datetime
+```typescript
+/** 权限标志（类比 Linux 文件权限） */
+enum Permission {
+  READ_FILE = 1 << 0,
+  WRITE_FILE = 1 << 1,
+  EXECUTE_CODE = 1 << 2,
+  NETWORK_ACCESS = 1 << 3,
+  CALL_LLM = 1 << 4,
+  SPAWN_AGENT = 1 << 5,
 
-class Permission(Flag):
-    """权限标志（类比 Linux 文件权限）"""
-    READ_FILE = auto()
-    WRITE_FILE = auto()
-    EXECUTE_CODE = auto()
-    NETWORK_ACCESS = auto()
-    CALL_LLM = auto()
-    SPAWN_AGENT = auto()
-    
-    # 预设权限组
-    READONLY = READ_FILE | CALL_LLM
-    DEVELOPER = READ_FILE | WRITE_FILE | EXECUTE_CODE | CALL_LLM
-    ADMIN = READ_FILE | WRITE_FILE | EXECUTE_CODE | NETWORK_ACCESS | CALL_LLM | SPAWN_AGENT
+  // 预设权限组
+  READONLY = READ_FILE | CALL_LLM,
+  DEVELOPER = READ_FILE | WRITE_FILE | EXECUTE_CODE | CALL_LLM,
+  ADMIN = READ_FILE |
+    WRITE_FILE |
+    EXECUTE_CODE |
+    NETWORK_ACCESS |
+    CALL_LLM |
+    SPAWN_AGENT,
+}
 
+/** Agent 进程（类比 OS 进程） */
+interface AgentProcess {
+  pid: number;
+  name: string;
+  permissions: number; // Permission 的位组合
+  status: "ready" | "running" | "blocked" | "terminated";
+  priority: number; // 0-9, 数字越大优先级越高
+  cpuQuota: number; // API 调用配额（每分钟）
+  memoryLimit: number; // Token 上限
+  createdAt: Date | null;
+  parentPid: number | null;
+}
 
-@dataclass
-class AgentProcess:
-    """Agent 进程（类比 OS 进程）"""
-    pid: int
-    name: str
-    permissions: Permission
-    status: str = "ready"       # ready / running / blocked / terminated
-    priority: int = 5           # 0-9, 数字越大优先级越高
-    cpu_quota: float = 1.0      # API 调用配额（每分钟）
-    memory_limit: int = 100000  # Token 上限
-    created_at: datetime = None
-    parent_pid: Optional[int] = None
+/** 简化版 Agent 操作系统 */
+class AgentOS {
+  private processes: Map<number, AgentProcess> = new Map();
+  private nextPid = 1;
+  private runQueue: Array<[number, number]> = []; // [priority, pid]
 
+  spawn(
+    name: string,
+    permissions: number,
+    priority: number = 5
+  ): AgentProcess {
+    /** 创建新的 Agent 进程 */
+    const proc: AgentProcess = {
+      pid: this.nextPid,
+      name,
+      permissions,
+      status: "ready",
+      priority,
+      cpuQuota: 1.0,
+      memoryLimit: 100000,
+      createdAt: new Date(),
+      parentPid: null,
+    };
+    this.processes.set(this.nextPid, proc);
+    this.nextPid++;
+    return proc;
+  }
 
-class AgentOS:
-    """简化版 Agent 操作系统"""
-    
-    def __init__(self):
-        self.processes: dict[int, AgentProcess] = {}
-        self.next_pid = 1
-        self.run_queue = asyncio.PriorityQueue()
-    
-    def spawn(self, name: str, permissions: Permission, 
-              priority: int = 5) -> AgentProcess:
-        """创建新的 Agent 进程"""
-        proc = AgentProcess(
-            pid=self.next_pid,
-            name=name,
-            permissions=permissions,
-            priority=priority,
-            created_at=datetime.now(),
-        )
-        self.processes[self.next_pid] = proc
-        self.next_pid += 1
-        return proc
-    
-    def check_permission(self, pid: int, required: Permission) -> bool:
-        """权限检查"""
-        proc = self.processes.get(pid)
-        if not proc:
-            return False
-        return required in proc.permissions
-    
-    async def execute_step(self, proc: AgentProcess):
-        """执行 Agent 的下一步操作（需对接具体 Agent 逻辑）"""
-        # 需要实现：调用 Agent 的推理逻辑，执行一步操作
-        pass
+  checkPermission(pid: number, required: number): boolean {
+    /** 权限检查 */
+    const proc = this.processes.get(pid);
+    if (!proc) return false;
+    return (proc.permissions & required) === required;
+  }
 
-    async def schedule(self):
-        """简单的优先级调度"""
-        while True:
-            priority, pid = await self.run_queue.get()
-            proc = self.processes.get(pid)
-            if proc and proc.status != "terminated":
-                proc.status = "running"
-                # 执行 Agent 的下一步
-                await self.execute_step(proc)
-                
-                if proc.status == "running":
-                    proc.status = "ready"
-                    await self.run_queue.put((-proc.priority, pid))
+  async executeStep(proc: AgentProcess): Promise<void> {
+    /** 执行 Agent 的下一步操作（需对接具体 Agent 逻辑） */
+    // 需要实现：调用 Agent 的推理逻辑，执行一步操作
+  }
+
+  async schedule(): Promise<void> {
+    /** 简单的优先级调度 */
+    while (true) {
+      // 按优先级排序（高优先级在前）
+      this.runQueue.sort((a, b) => b[0] - a[0]);
+      const item = this.runQueue.shift();
+      if (!item) {
+        await new Promise((r) => setTimeout(r, 100));
+        continue;
+      }
+
+      const [, pid] = item;
+      const proc = this.processes.get(pid);
+      if (proc && proc.status !== "terminated") {
+        proc.status = "running";
+        // 执行 Agent 的下一步
+        await this.executeStep(proc);
+
+        if (proc.status === "running") {
+          proc.status = "ready";
+          this.runQueue.push([proc.priority, pid]);
+        }
+      }
+    }
+  }
+}
 ```
 
 ### Agent OS 的类比
@@ -295,96 +347,107 @@ MCP 协议让 Agent 能使用工具。下一步是让 **Agent 之间能互相调
 
 ### 关键设计挑战
 
-```python
-class LongRunningAgent:
-    """长期运行 Agent 的核心设计"""
-    
-    def __init__(self):
-        self.state = {}
-        self.goals = []           # 长期目标队列
-        self.schedule = []        # 定时任务
-        self.checkpoint_path = "agent_state.json"
-    
-    async def check_scheduled_tasks(self):
-        """检查并执行到期的定时任务"""
-        # 需要实现：遍历 self.schedule，执行到期任务
-        pass
+```typescript
+import * as fs from "fs";
 
-    async def poll_events(self) -> list:
-        """轮询外部事件（如消息队列、Webhook 等）"""
-        # 需要实现：从事件源拉取新事件
-        return []
+class LongRunningAgent {
+  /** 长期运行 Agent 的核心设计 */
 
-    async def handle_event(self, event):
-        """处理单个外部事件"""
-        # 需要实现：根据事件类型分发处理
-        pass
+  private state: Record<string, any> = {};
+  private goals: any[] = []; // 长期目标队列
+  private schedule: any[] = []; // 定时任务
+  private checkpointPath = "agent_state.json";
 
-    async def advance_goal(self, goal):
-        """推进一个长期目标的下一步"""
-        # 需要实现：分解目标为子任务并执行
-        pass
+  async checkScheduledTasks(): Promise<void> {
+    /** 检查并执行到期的定时任务 */
+    // 需要实现：遍历 this.schedule，执行到期任务
+  }
 
-    async def health_check(self):
-        """自我健康检查（内存、状态一致性等）"""
-        # 需要实现：检查 Agent 状态是否正常
-        pass
+  async pollEvents(): Promise<any[]> {
+    /** 轮询外部事件（如消息队列、Webhook 等） */
+    // 需要实现：从事件源拉取新事件
+    return [];
+  }
 
-    async def handle_error(self, error: Exception):
-        """错误处理与恢复"""
-        # 需要实现：记录错误日志，尝试恢复或降级
-        print(f"Agent 错误: {error}")
+  async handleEvent(event: any): Promise<void> {
+    /** 处理单个外部事件 */
+    // 需要实现：根据事件类型分发处理
+  }
 
-    async def run_forever(self):
-        """主循环：永不停止"""
-        self.load_checkpoint()
-        
-        while True:
-            try:
-                # 1. 检查定时任务
-                await self.check_scheduled_tasks()
-                
-                # 2. 处理新的外部事件
-                events = await self.poll_events()
-                for event in events:
-                    await self.handle_event(event)
-                
-                # 3. 推进长期目标
-                if self.goals:
-                    await self.advance_goal(self.goals[0])
-                
-                # 4. 定期保存状态
-                self.save_checkpoint()
-                
-                # 5. 自我健康检查
-                await self.health_check()
-                
-                await asyncio.sleep(60)  # 每分钟一个循环
-                
-            except Exception as e:
-                await self.handle_error(e)
-                self.save_checkpoint()  # 出错也要保存
-    
-    def save_checkpoint(self):
-        """保存完整状态，崩溃后可恢复"""
-        import json
-        with open(self.checkpoint_path, "w") as f:
-            json.dump({
-                "state": self.state,
-                "goals": self.goals,
-                "schedule": self.schedule,
-            }, f)
-    
-    def load_checkpoint(self):
-        """从上次中断处恢复"""
-        import json
-        from pathlib import Path
-        if Path(self.checkpoint_path).exists():
-            with open(self.checkpoint_path) as f:
-                data = json.load(f)
-                self.state = data["state"]
-                self.goals = data["goals"]
-                self.schedule = data["schedule"]
+  async advanceGoal(goal: any): Promise<void> {
+    /** 推进一个长期目标的下一步 */
+    // 需要实现：分解目标为子任务并执行
+  }
+
+  async healthCheck(): Promise<void> {
+    /** 自我健康检查（内存、状态一致性等） */
+    // 需要实现：检查 Agent 状态是否正常
+  }
+
+  async handleError(error: Error): Promise<void> {
+    /** 错误处理与恢复 */
+    // 需要实现：记录错误日志，尝试恢复或降级
+    console.error(`Agent 错误: ${error}`);
+  }
+
+  async runForever(): Promise<void> {
+    /** 主循环：永不停止 */
+    this.loadCheckpoint();
+
+    while (true) {
+      try {
+        // 1. 检查定时任务
+        await this.checkScheduledTasks();
+
+        // 2. 处理新的外部事件
+        const events = await this.pollEvents();
+        for (const event of events) {
+          await this.handleEvent(event);
+        }
+
+        // 3. 推进长期目标
+        if (this.goals.length > 0) {
+          await this.advanceGoal(this.goals[0]);
+        }
+
+        // 4. 定期保存状态
+        this.saveCheckpoint();
+
+        // 5. 自我健康检查
+        await this.healthCheck();
+
+        await new Promise((r) => setTimeout(r, 60000)); // 每分钟一个循环
+      } catch (e) {
+        await this.handleError(e as Error);
+        this.saveCheckpoint(); // 出错也要保存
+      }
+    }
+  }
+
+  saveCheckpoint(): void {
+    /** 保存完整状态，崩溃后可恢复 */
+    fs.writeFileSync(
+      this.checkpointPath,
+      JSON.stringify({
+        state: this.state,
+        goals: this.goals,
+        schedule: this.schedule,
+      })
+    );
+  }
+
+  loadCheckpoint(): void {
+    /** 从上次中断处恢复 */
+    if (fs.existsSync(this.checkpointPath)) {
+      const data = JSON.parse(
+        fs.readFileSync(this.checkpointPath, "utf-8")
+      );
+      this.state = data.state;
+      this.goals = data.goals;
+      this.schedule = data.schedule;
+    }
+  }
+}
 ```
 
 ::: warning 长期运行的风险

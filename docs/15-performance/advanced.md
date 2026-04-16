@@ -22,193 +22,237 @@
 
 ### 语义缓存实现
 
-```python
-"""semantic_cache.py — 基于嵌入向量的语义缓存"""
+```typescript
+// semantic_cache.ts — 基于嵌入向量的语义缓存
 
-import time
-import numpy as np
-from dataclasses import dataclass
+import { createHash } from "crypto";
 
-@dataclass
-class CacheEntry:
-    query: str
-    response: str
-    embedding: np.ndarray
-    created_at: float
-    hit_count: int = 0
-    ttl: float = 3600.0  # 默认 1 小时过期
+interface CacheEntry {
+  query: string;
+  response: string;
+  embedding: number[];
+  createdAt: number;
+  hitCount: number;
+  ttl: number; // 默认 1 小时过期
+}
 
-class SemanticCache:
-    """语义缓存——用向量相似度匹配"""
+class SemanticCache {
+  /** 语义缓存——用向量相似度匹配 */
 
-    def __init__(
-        self,
-        similarity_threshold: float = 0.95,
-        max_entries: int = 1000,
-    ):
-        self.threshold = similarity_threshold
-        self.max_entries = max_entries
-        self.entries: list[CacheEntry] = []
-        self._stats = {"hits": 0, "misses": 0}
+  private threshold: number;
+  private maxEntries: number;
+  private entries: CacheEntry[] = [];
+  private _stats = { hits: 0, misses: 0 };
 
-    async def get_embedding(self, text: str) -> np.ndarray:
-        """获取文本的嵌入向量
+  constructor(
+    similarityThreshold: number = 0.95,
+    maxEntries: number = 1000,
+  ) {
+    this.threshold = similarityThreshold;
+    this.maxEntries = maxEntries;
+  }
 
-        生产环境使用 Voyage AI 或 OpenAI Embeddings API：
-            response = await voyage_client.embed([text], model="voyage-3")
-            return np.array(response.embeddings[0])
+  async getEmbedding(text: string): Promise<number[]> {
+    /**
+     * 获取文本的嵌入向量
+     *
+     * 生产环境使用 Voyage AI 或 OpenAI Embeddings API：
+     *   const response = await voyageClient.embed([text], { model: "voyage-3" });
+     *   return response.embeddings[0];
+     *
+     * 这里用简化方式演示逻辑：
+     */
+    const hashBytes = createHash("sha256").update(text).digest();
+    // 取前 32 字节，每 4 字节转为一个 float32
+    const arr: number[] = [];
+    for (let i = 0; i < 32 && i + 3 < hashBytes.length; i += 4) {
+      arr.push(hashBytes.readFloatLE(i));
+    }
+    return arr;
+  }
 
-        这里用简化方式演示逻辑：
-        """
-        import hashlib
-        hash_bytes = hashlib.sha256(text.encode()).digest()
-        return np.frombuffer(hash_bytes, dtype=np.float32)[:8]
+  private _cosineSimilarity(a: number[], b: number[]): number {
+    /** 计算余弦相似度 */
+    let dot = 0, normA = 0, normB = 0;
+    for (let i = 0; i < a.length; i++) {
+      dot += a[i] * b[i];
+      normA += a[i] * a[i];
+      normB += b[i] * b[i];
+    }
+    normA = Math.sqrt(normA);
+    normB = Math.sqrt(normB);
+    if (normA === 0 || normB === 0) return 0.0;
+    return dot / (normA * normB);
+  }
 
-    def _cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> float:
-        """计算余弦相似度"""
-        norm_a = np.linalg.norm(a)
-        norm_b = np.linalg.norm(b)
-        if norm_a == 0 or norm_b == 0:
-            return 0.0
-        return float(np.dot(a, b) / (norm_a * norm_b))
+  async get(query: string): Promise<string | null> {
+    /** 查找语义相似的缓存条目 */
+    const queryEmbedding = await this.getEmbedding(query);
+    const now = Date.now() / 1000;
 
-    async def get(self, query: str) -> str | None:
-        """查找语义相似的缓存条目"""
-        query_embedding = await self.get_embedding(query)
-        now = time.time()
+    let bestMatch: CacheEntry | null = null;
+    let bestSimilarity = 0.0;
 
-        best_match: CacheEntry | None = None
-        best_similarity = 0.0
+    for (const entry of this.entries) {
+      // 跳过过期条目
+      if (now - entry.createdAt > entry.ttl) {
+        continue;
+      }
+      const similarity = this._cosineSimilarity(queryEmbedding, entry.embedding);
+      if (similarity > this.threshold && similarity > bestSimilarity) {
+        bestMatch = entry;
+        bestSimilarity = similarity;
+      }
+    }
 
-        for entry in self.entries:
-            # 跳过过期条目
-            if now - entry.created_at > entry.ttl:
-                continue
-            similarity = self._cosine_similarity(
-                query_embedding, entry.embedding
-            )
-            if similarity > self.threshold and similarity > best_similarity:
-                best_match = entry
-                best_similarity = similarity
+    if (bestMatch) {
+      bestMatch.hitCount += 1;
+      this._stats.hits += 1;
+      return bestMatch.response;
+    }
 
-        if best_match:
-            best_match.hit_count += 1
-            self._stats["hits"] += 1
-            return best_match.response
+    this._stats.misses += 1;
+    return null;
+  }
 
-        self._stats["misses"] += 1
-        return None
+  async set(query: string, response: string, ttl: number = 3600): Promise<void> {
+    /** 添加缓存条目 */
+    const embedding = await this.getEmbedding(query);
 
-    async def set(self, query: str, response: str, ttl: float = 3600.0):
-        """添加缓存条目"""
-        embedding = await self.get_embedding(query)
+    // 容量控制：淘汰最旧的 25% 条目
+    if (this.entries.length >= this.maxEntries) {
+      this.entries.sort((a, b) => a.createdAt - b.createdAt);
+      this.entries = this.entries.slice(Math.floor(this.entries.length / 4));
+    }
 
-        # 容量控制：淘汰最旧的 25% 条目
-        if len(self.entries) >= self.max_entries:
-            self.entries.sort(key=lambda e: e.created_at)
-            self.entries = self.entries[len(self.entries) // 4:]
+    this.entries.push({
+      query,
+      response,
+      embedding,
+      createdAt: Date.now() / 1000,
+      hitCount: 0,
+      ttl,
+    });
+  }
 
-        self.entries.append(CacheEntry(
-            query=query,
-            response=response,
-            embedding=embedding,
-            created_at=time.time(),
-            ttl=ttl,
-        ))
-
-    @property
-    def hit_rate(self) -> float:
-        total = self._stats["hits"] + self._stats["misses"]
-        return self._stats["hits"] / total if total > 0 else 0.0
+  get hitRate(): number {
+    const total = this._stats.hits + this._stats.misses;
+    return total > 0 ? this._stats.hits / total : 0.0;
+  }
+}
 ```
 
 ### 多级缓存架构
 
 单一缓存层往往不够。更好的设计是三级缓存，逐级降速但容量递增：
 
-```python
-"""multi_level_cache.py — L1(内存) -> L2(Redis) -> L3(语义缓存)"""
+```typescript
+// multi_level_cache.ts — L1(内存) -> L2(Redis) -> L3(语义缓存)
 
-import time
-import redis.asyncio as redis
+import Redis from "ioredis";
 
-class MultiLevelCache:
-    """三级缓存架构"""
+class MultiLevelCache {
+  /** 三级缓存架构 */
 
-    def __init__(self, redis_url: str = "redis://localhost:6379"):
-        self.l1: dict[str, tuple[str, float]] = {}  # 内存（最快）
-        self.l2 = redis.from_url(redis_url)          # Redis（分布式）
-        self.l3 = SemanticCache(similarity_threshold=0.95)  # 语义（最智能）
+  private l1: Map<string, { result: string; timestamp: number }> = new Map(); // 内存（最快）
+  private l2: Redis;                        // Redis（分布式）
+  private l3: SemanticCache;                // 语义（最智能）
 
-    async def get(self, query: str, exact_key: str | None = None) -> str | None:
-        """逐级查找，命中后回填上层"""
+  constructor(redisUrl: string = "redis://localhost:6379") {
+    this.l2 = new Redis(redisUrl);
+    this.l3 = new SemanticCache(0.95);
+  }
 
-        # L1: 精确匹配（内存，微秒级）
-        if exact_key and exact_key in self.l1:
-            result, ts = self.l1[exact_key]
-            if time.time() - ts < 300:  # 5 分钟 TTL
-                return result
+  async get(query: string, exactKey?: string): Promise<string | null> {
+    /** 逐级查找，命中后回填上层 */
 
-        # L2: 精确匹配（Redis，毫秒级）
-        if exact_key:
-            cached = await self.l2.get(f"agent:cache:{exact_key}")
-            if cached:
-                result = cached.decode()
-                # 回填 L1
-                self.l1[exact_key] = (result, time.time())
-                return result
+    // L1: 精确匹配（内存，微秒级）
+    if (exactKey && this.l1.has(exactKey)) {
+      const entry = this.l1.get(exactKey)!;
+      if (Date.now() / 1000 - entry.timestamp < 300) {  // 5 分钟 TTL
+        return entry.result;
+      }
+    }
 
-        # L3: 语义匹配（向量计算，十毫秒级）
-        semantic_result = await self.l3.get(query)
-        if semantic_result:
-            return semantic_result
+    // L2: 精确匹配（Redis，毫秒级）
+    if (exactKey) {
+      const cached = await this.l2.get(`agent:cache:${exactKey}`);
+      if (cached) {
+        // 回填 L1
+        this.l1.set(exactKey, { result: cached, timestamp: Date.now() / 1000 });
+        return cached;
+      }
+    }
 
-        return None
+    // L3: 语义匹配（向量计算，十毫秒级）
+    const semanticResult = await this.l3.get(query);
+    if (semanticResult) {
+      return semanticResult;
+    }
 
-    async def set(self, query: str, response: str, exact_key: str | None = None):
-        """写入所有层级"""
-        if exact_key:
-            self.l1[exact_key] = (response, time.time())
-            await self.l2.setex(f"agent:cache:{exact_key}", 3600, response)
-        await self.l3.set(query, response)
+    return null;
+  }
+
+  async set(query: string, response: string, exactKey?: string): Promise<void> {
+    /** 写入所有层级 */
+    if (exactKey) {
+      this.l1.set(exactKey, { result: response, timestamp: Date.now() / 1000 });
+      await this.l2.setex(`agent:cache:${exactKey}`, 3600, response);
+    }
+    await this.l3.set(query, response);
+  }
+}
 ```
 
 ### 缓存失效策略
 
 缓存最难的部分不是写入，而是失效——数据变了，旧缓存就不对了：
 
-```python
-"""cache_invalidation.py — 缓存失效策略"""
+```typescript
+// cache_invalidation.ts — 缓存失效策略
 
-class CacheInvalidator:
-    """当底层数据变更时，主动清除相关缓存"""
+class CacheInvalidator {
+  /** 当底层数据变更时，主动清除相关缓存 */
 
-    def __init__(self, cache: MultiLevelCache):
-        self.cache = cache
+  private cache: MultiLevelCache;
 
-    async def invalidate_by_tool(self, tool_name: str):
-        """工具执行写操作时，清除相关的读缓存"""
-        # 写操作 -> 需要清除的读缓存
-        write_to_read_map = {
-            "insert_record": ["query", "list_tables"],
-            "update_record": ["query"],
-            "delete_record": ["query", "list_tables"],
-        }
-        related_tools = write_to_read_map.get(tool_name, [])
-        for related in related_tools:
-            keys_to_remove = [
-                k for k in self.cache.l1 if k.startswith(related)
-            ]
-            for k in keys_to_remove:
-                del self.cache.l1[k]
+  constructor(cache: MultiLevelCache) {
+    this.cache = cache;
+  }
 
-    async def invalidate_by_pattern(self, pattern: str):
-        """按模式批量清除 Redis 缓存"""
-        keys = []
-        async for key in self.cache.l2.scan_iter(f"agent:cache:{pattern}*"):
-            keys.append(key)
-        if keys:
-            await self.cache.l2.delete(*keys)
+  async invalidateByTool(toolName: string): Promise<void> {
+    /** 工具执行写操作时，清除相关的读缓存 */
+    // 写操作 -> 需要清除的读缓存
+    const writeToReadMap: Record<string, string[]> = {
+      insert_record: ["query", "list_tables"],
+      update_record: ["query"],
+      delete_record: ["query", "list_tables"],
+    };
+    const relatedTools = writeToReadMap[toolName] ?? [];
+    for (const related of relatedTools) {
+      const keysToRemove = [...(this.cache as any).l1.keys()].filter(
+        (k: string) => k.startsWith(related)
+      );
+      for (const k of keysToRemove) {
+        (this.cache as any).l1.delete(k);
+      }
+    }
+  }
+
+  async invalidateByPattern(pattern: string): Promise<void> {
+    /** 按模式批量清除 Redis 缓存 */
+    const stream = (this.cache as any).l2.scanStream({
+      match: `agent:cache:${pattern}*`,
+    });
+    const keys: string[] = [];
+    for await (const batch of stream) {
+      keys.push(...batch);
+    }
+    if (keys.length > 0) {
+      await (this.cache as any).l2.del(...keys);
+    }
+  }
+}
 ```
 
 ## 智能模型路由器
@@ -217,308 +261,362 @@ class CacheInvalidator:
 
 ### 模型画像 + 多因子评分
 
-```python
-"""smart_router.py — 智能模型路由器"""
+```typescript
+// smart_router.ts — 智能模型路由器
 
-import time
-from dataclasses import dataclass
-from enum import Enum
+enum Complexity {
+  SIMPLE = "simple",
+  MEDIUM = "medium",
+  COMPLEX = "complex",
+}
 
-class Complexity(Enum):
-    SIMPLE = "simple"
-    MEDIUM = "medium"
-    COMPLEX = "complex"
+interface ModelProfile {
+  /** 模型画像：静态属性 + 动态状态 */
+  name: string;
+  provider: string;
+  costPer1kInput: number;
+  costPer1kOutput: number;
+  avgLatencyMs: number;          // 实时更新
+  capabilityScore: number;       // 0-1 能力评分
+  isAvailable: boolean;
+  errorRate: number;             // 近期错误率（实时更新）
+}
 
-@dataclass
-class ModelProfile:
-    """模型画像：静态属性 + 动态状态"""
-    name: str
-    provider: str
-    cost_per_1k_input: float
-    cost_per_1k_output: float
-    avg_latency_ms: float         # 实时更新
-    capability_score: float       # 0-1 能力评分
-    is_available: bool = True
-    error_rate: float = 0.0       # 近期错误率（实时更新）
+interface RoutingDecision {
+  model: string;
+  provider: string;
+  reason: string;
+  estimatedCost: number;
+  estimatedLatencyMs: number;
+}
 
-@dataclass
-class RoutingDecision:
-    model: str
-    provider: str
-    reason: str
-    estimated_cost: float
-    estimated_latency_ms: float
+class SmartModelRouter {
+  /** 智能模型路由器——综合多因子做最优选择 */
 
-class SmartModelRouter:
-    """智能模型路由器——综合多因子做最优选择"""
+  models: Record<string, ModelProfile>;
 
-    def __init__(self):
-        self.models = {
-            "claude-opus-4-20250514": ModelProfile(
-                name="claude-opus-4-20250514", provider="anthropic",
-                cost_per_1k_input=0.015, cost_per_1k_output=0.075,
-                avg_latency_ms=3000, capability_score=1.0,
-            ),
-            "claude-sonnet-4-20250514": ModelProfile(
-                name="claude-sonnet-4-20250514", provider="anthropic",
-                cost_per_1k_input=0.003, cost_per_1k_output=0.015,
-                avg_latency_ms=1500, capability_score=0.85,
-            ),
-            "claude-haiku-3-20250414": ModelProfile(
-                name="claude-haiku-3-20250414", provider="anthropic",
-                cost_per_1k_input=0.00025, cost_per_1k_output=0.00125,
-                avg_latency_ms=500, capability_score=0.6,
-            ),
-            "gpt-4o": ModelProfile(
-                name="gpt-4o", provider="openai",
-                cost_per_1k_input=0.0025, cost_per_1k_output=0.01,
-                avg_latency_ms=1200, capability_score=0.85,
-            ),
-            "gpt-4o-mini": ModelProfile(
-                name="gpt-4o-mini", provider="openai",
-                cost_per_1k_input=0.00015, cost_per_1k_output=0.0006,
-                avg_latency_ms=400, capability_score=0.55,
-            ),
-        }
+  constructor() {
+    this.models = {
+      "claude-opus-4-20250514": {
+        name: "claude-opus-4-20250514", provider: "anthropic",
+        costPer1kInput: 0.015, costPer1kOutput: 0.075,
+        avgLatencyMs: 3000, capabilityScore: 1.0,
+        isAvailable: true, errorRate: 0.0,
+      },
+      "claude-sonnet-4-20250514": {
+        name: "claude-sonnet-4-20250514", provider: "anthropic",
+        costPer1kInput: 0.003, costPer1kOutput: 0.015,
+        avgLatencyMs: 1500, capabilityScore: 0.85,
+        isAvailable: true, errorRate: 0.0,
+      },
+      "claude-haiku-3-20250414": {
+        name: "claude-haiku-3-20250414", provider: "anthropic",
+        costPer1kInput: 0.00025, costPer1kOutput: 0.00125,
+        avgLatencyMs: 500, capabilityScore: 0.6,
+        isAvailable: true, errorRate: 0.0,
+      },
+      "gpt-4o": {
+        name: "gpt-4o", provider: "openai",
+        costPer1kInput: 0.0025, costPer1kOutput: 0.01,
+        avgLatencyMs: 1200, capabilityScore: 0.85,
+        isAvailable: true, errorRate: 0.0,
+      },
+      "gpt-4o-mini": {
+        name: "gpt-4o-mini", provider: "openai",
+        costPer1kInput: 0.00015, costPer1kOutput: 0.0006,
+        avgLatencyMs: 400, capabilityScore: 0.55,
+        isAvailable: true, errorRate: 0.0,
+      },
+    };
+  }
 
-    def route(
-        self,
-        message: str,
-        priority: str = "balanced",   # "cost", "quality", "speed", "balanced"
-        budget_remaining: float | None = None,
-    ) -> RoutingDecision:
-        """智能路由决策"""
-        # 1. 判断任务复杂度
-        complexity = self._classify(message)
-        estimated_tokens = len(message) // 2
+  route(
+    message: string,
+    priority: "cost" | "quality" | "speed" | "balanced" = "balanced",
+    budgetRemaining?: number,
+  ): RoutingDecision {
+    /** 智能路由决策 */
+    // 1. 判断任务复杂度
+    const complexity = this._classify(message);
+    const estimatedTokens = Math.floor(message.length / 2);
 
-        # 2. 过滤可用模型（排除故障和高错误率的）
-        available = {
-            name: m for name, m in self.models.items()
-            if m.is_available and m.error_rate < 0.3
-        }
+    // 2. 过滤可用模型（排除故障和高错误率的）
+    const available = Object.entries(this.models).filter(
+      ([, m]) => m.isAvailable && m.errorRate < 0.3
+    );
 
-        # 3. 多因子评分
-        scored = []
-        for name, model in available.items():
-            score = self._score(
-                model, complexity, priority,
-                estimated_tokens, budget_remaining,
-            )
-            if score >= 0:
-                scored.append((name, model, score))
+    // 3. 多因子评分
+    const scored: Array<[string, ModelProfile, number]> = [];
+    for (const [name, model] of available) {
+      const score = this._score(
+        model, complexity, priority, estimatedTokens, budgetRemaining
+      );
+      if (score >= 0) {
+        scored.push([name, model, score]);
+      }
+    }
 
-        scored.sort(key=lambda x: x[2], reverse=True)
-        best_name, best_model, _ = scored[0]
+    scored.sort((a, b) => b[2] - a[2]);
+    const [bestName, bestModel] = scored[0];
 
-        est_cost = (
-            estimated_tokens * best_model.cost_per_1k_input / 1000
-            + 500 * best_model.cost_per_1k_output / 1000
-        )
-        return RoutingDecision(
-            model=best_name,
-            provider=best_model.provider,
-            reason=f"complexity={complexity.value}, priority={priority}",
-            estimated_cost=round(est_cost, 6),
-            estimated_latency_ms=best_model.avg_latency_ms,
-        )
+    const estCost =
+      (estimatedTokens * bestModel.costPer1kInput) / 1000 +
+      (500 * bestModel.costPer1kOutput) / 1000;
 
-    def _classify(self, message: str) -> Complexity:
-        """规则引擎判断复杂度（零额外成本）"""
-        msg_len = len(message)
-        if msg_len < 50 or any(k in message for k in ["翻译", "格式化", "分类"]):
-            return Complexity.SIMPLE
-        if msg_len > 500 or any(k in message for k in ["分析", "设计", "推理"]):
-            return Complexity.COMPLEX
-        return Complexity.MEDIUM
+    return {
+      model: bestName,
+      provider: bestModel.provider,
+      reason: `complexity=${complexity}, priority=${priority}`,
+      estimatedCost: Math.round(estCost * 1_000_000) / 1_000_000,
+      estimatedLatencyMs: bestModel.avgLatencyMs,
+    };
+  }
 
-    def _score(
-        self, model: ModelProfile, complexity: Complexity,
-        priority: str, est_tokens: int, budget: float | None,
-    ) -> float:
-        """多因子评分"""
-        # 能力门槛
-        min_cap = {
-            Complexity.SIMPLE: 0.4,
-            Complexity.MEDIUM: 0.7,
-            Complexity.COMPLEX: 0.9,
-        }[complexity]
-        if model.capability_score < min_cap:
-            return -1  # 能力不足，排除
+  private _classify(message: string): Complexity {
+    /** 规则引擎判断复杂度（零额外成本） */
+    const msgLen = message.length;
+    if (msgLen < 50 || ["翻译", "格式化", "分类"].some((k) => message.includes(k))) {
+      return Complexity.SIMPLE;
+    }
+    if (msgLen > 500 || ["分析", "设计", "推理"].some((k) => message.includes(k))) {
+      return Complexity.COMPLEX;
+    }
+    return Complexity.MEDIUM;
+  }
 
-        # 预算检查
-        est_cost = est_tokens * model.cost_per_1k_input / 1000
-        if budget is not None and est_cost > budget:
-            return -1  # 超预算
+  private _score(
+    model: ModelProfile,
+    complexity: Complexity,
+    priority: string,
+    estTokens: number,
+    budget?: number,
+  ): number {
+    /** 多因子评分 */
+    // 能力门槛
+    const minCap: Record<Complexity, number> = {
+      [Complexity.SIMPLE]: 0.4,
+      [Complexity.MEDIUM]: 0.7,
+      [Complexity.COMPLEX]: 0.9,
+    };
+    if (model.capabilityScore < minCap[complexity]) {
+      return -1; // 能力不足，排除
+    }
 
-        # 权重矩阵
-        weights = {
-            "cost":     {"cost": 0.6, "quality": 0.2, "speed": 0.2},
-            "quality":  {"cost": 0.1, "quality": 0.7, "speed": 0.2},
-            "speed":    {"cost": 0.1, "quality": 0.2, "speed": 0.7},
-            "balanced": {"cost": 0.33, "quality": 0.34, "speed": 0.33},
-        }[priority]
+    // 预算检查
+    const estCost = (estTokens * model.costPer1kInput) / 1000;
+    if (budget !== undefined && estCost > budget) {
+      return -1; // 超预算
+    }
 
-        # 归一化评分（0-1）
-        cost_score = 1.0 - min(model.cost_per_1k_input / 0.015, 1.0)
-        quality_score = model.capability_score
-        speed_score = 1.0 - min(model.avg_latency_ms / 5000, 1.0)
+    // 权重矩阵
+    const weightsMap: Record<string, { cost: number; quality: number; speed: number }> = {
+      cost:     { cost: 0.6, quality: 0.2, speed: 0.2 },
+      quality:  { cost: 0.1, quality: 0.7, speed: 0.2 },
+      speed:    { cost: 0.1, quality: 0.2, speed: 0.7 },
+      balanced: { cost: 0.33, quality: 0.34, speed: 0.33 },
+    };
+    const weights = weightsMap[priority];
 
-        return (
-            weights["cost"] * cost_score
-            + weights["quality"] * quality_score
-            + weights["speed"] * speed_score
-        )
+    // 归一化评分（0-1）
+    const costScore = 1.0 - Math.min(model.costPer1kInput / 0.015, 1.0);
+    const qualityScore = model.capabilityScore;
+    const speedScore = 1.0 - Math.min(model.avgLatencyMs / 5000, 1.0);
 
-    def update_model_stats(self, model: str, latency_ms: int, success: bool):
-        """每次调用完成后更新模型实时状态"""
-        if model in self.models:
-            m = self.models[model]
-            # 滑动平均更新延迟
-            m.avg_latency_ms = m.avg_latency_ms * 0.9 + latency_ms * 0.1
-            # 更新错误率
-            if not success:
-                m.error_rate = min(m.error_rate + 0.1, 1.0)
-            else:
-                m.error_rate = max(m.error_rate - 0.01, 0.0)
+    return (
+      weights.cost * costScore +
+      weights.quality * qualityScore +
+      weights.speed * speedScore
+    );
+  }
 
+  updateModelStats(model: string, latencyMs: number, success: boolean): void {
+    /** 每次调用完成后更新模型实时状态 */
+    if (model in this.models) {
+      const m = this.models[model];
+      // 滑动平均更新延迟
+      m.avgLatencyMs = m.avgLatencyMs * 0.9 + latencyMs * 0.1;
+      // 更新错误率
+      if (!success) {
+        m.errorRate = Math.min(m.errorRate + 0.1, 1.0);
+      } else {
+        m.errorRate = Math.max(m.errorRate - 0.01, 0.0);
+      }
+    }
+  }
+}
 
-# 使用示例
-router = SmartModelRouter()
+// 使用示例
+const router = new SmartModelRouter();
 
-decision = router.route("帮我翻译这段话", priority="cost")
-print(f"选择: {decision.model}, 原因: {decision.reason}")
+let decision = router.route("帮我翻译这段话", "cost");
+console.log(`选择: ${decision.model}, 原因: ${decision.reason}`);
 
 decision = router.route(
-    "请设计一个分布式消息队列系统，要求支持百万级并发...",
-    priority="quality",
-)
-print(f"选择: {decision.model}, 原因: {decision.reason}")
+  "请设计一个分布式消息队列系统，要求支持百万级并发...",
+  "quality",
+);
+console.log(`选择: ${decision.model}, 原因: ${decision.reason}`);
 ```
 
 ## Fallback 降级链
 
 当主模型不可用时（超时、限流、宕机），自动降级到备选模型，而不是直接报错：
 
-```python
-"""fallback_chain.py — 跨提供商 Fallback 降级链"""
+```typescript
+// fallback_chain.ts — 跨提供商 Fallback 降级链
 
-import asyncio
-import anthropic
-import openai
+import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 
-class ModelWithFallback:
-    """带降级的模型调用——主模型失败自动切换"""
+interface LLMResult {
+  text: string;
+  model: string;
+  usage: { input_tokens: number; output_tokens: number };
+  degraded?: boolean;
+  original_model?: string;
+}
 
-    FALLBACK_CHAIN = [
-        {"provider": "anthropic", "model": "claude-sonnet-4-20250514"},
-        {"provider": "openai",    "model": "gpt-4o"},
-        {"provider": "anthropic", "model": "claude-haiku-3-20250414"},
-        {"provider": "openai",    "model": "gpt-4o-mini"},
-    ]
+class ModelWithFallback {
+  /** 带降级的模型调用——主模型失败自动切换 */
 
-    def __init__(self):
-        self.anthropic_client = anthropic.AsyncAnthropic()
-        self.openai_client = openai.AsyncOpenAI()
+  static FALLBACK_CHAIN = [
+    { provider: "anthropic", model: "claude-sonnet-4-20250514" },
+    { provider: "openai",    model: "gpt-4o" },
+    { provider: "anthropic", model: "claude-haiku-3-20250414" },
+    { provider: "openai",    model: "gpt-4o-mini" },
+  ];
 
-    async def call(self, messages: list[dict], max_fallbacks: int = 3) -> dict:
-        """逐级尝试，直到成功"""
-        errors = []
-        for i, option in enumerate(self.FALLBACK_CHAIN[:max_fallbacks + 1]):
-            try:
-                result = await asyncio.wait_for(
-                    self._call_provider(
-                        option["provider"], option["model"], messages
-                    ),
-                    timeout=30.0,
-                )
-                if i > 0:
-                    result["degraded"] = True
-                    result["original_model"] = self.FALLBACK_CHAIN[0]["model"]
-                return result
-            except Exception as e:
-                errors.append(f"{option['model']}: {e}")
-                continue
+  private anthropicClient: Anthropic;
+  private openaiClient: OpenAI;
 
-        raise Exception(f"所有模型均不可用: {errors}")
+  constructor() {
+    this.anthropicClient = new Anthropic();
+    this.openaiClient = new OpenAI();
+  }
 
-    async def _call_provider(
-        self, provider: str, model: str, messages: list[dict]
-    ) -> dict:
-        if provider == "anthropic":
-            response = await self.anthropic_client.messages.create(
-                model=model, max_tokens=4096, messages=messages,
-            )
-            return {
-                "text": response.content[0].text,
-                "model": model,
-                "usage": {
-                    "input_tokens": response.usage.input_tokens,
-                    "output_tokens": response.usage.output_tokens,
-                },
-            }
-        elif provider == "openai":
-            response = await self.openai_client.chat.completions.create(
-                model=model, messages=messages, max_tokens=4096,
-            )
-            return {
-                "text": response.choices[0].message.content,
-                "model": model,
-                "usage": {
-                    "input_tokens": response.usage.prompt_tokens,
-                    "output_tokens": response.usage.completion_tokens,
-                },
-            }
+  async call(
+    messages: Array<{ role: "user" | "assistant"; content: string }>,
+    maxFallbacks: number = 3,
+  ): Promise<LLMResult> {
+    /** 逐级尝试，直到成功 */
+    const errors: string[] = [];
+    const chain = ModelWithFallback.FALLBACK_CHAIN.slice(0, maxFallbacks + 1);
+
+    for (let i = 0; i < chain.length; i++) {
+      const option = chain[i];
+      try {
+        const result = await Promise.race([
+          this._callProvider(option.provider, option.model, messages),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("超时")), 30_000)
+          ),
+        ]);
+        if (i > 0) {
+          result.degraded = true;
+          result.original_model = ModelWithFallback.FALLBACK_CHAIN[0].model;
+        }
+        return result;
+      } catch (err) {
+        errors.push(`${option.model}: ${err}`);
+        continue;
+      }
+    }
+
+    throw new Error(`所有模型均不可用: ${errors.join("; ")}`);
+  }
+
+  private async _callProvider(
+    provider: string,
+    model: string,
+    messages: Array<{ role: "user" | "assistant"; content: string }>,
+  ): Promise<LLMResult> {
+    if (provider === "anthropic") {
+      const response = await this.anthropicClient.messages.create({
+        model,
+        max_tokens: 4096,
+        messages,
+      });
+      const block = response.content[0];
+      return {
+        text: block.type === "text" ? block.text : "",
+        model,
+        usage: {
+          input_tokens: response.usage.input_tokens,
+          output_tokens: response.usage.output_tokens,
+        },
+      };
+    } else if (provider === "openai") {
+      const response = await this.openaiClient.chat.completions.create({
+        model,
+        messages,
+        max_tokens: 4096,
+      });
+      return {
+        text: response.choices[0].message.content ?? "",
+        model,
+        usage: {
+          input_tokens: response.usage?.prompt_tokens ?? 0,
+          output_tokens: response.usage?.completion_tokens ?? 0,
+        },
+      };
+    }
+    throw new Error(`未知的提供商: ${provider}`);
+  }
+}
 ```
 
 ## 预测性执行
 
 在 LLM 推理期间，如果能预判它可能需要的工具结果并提前获取，就可以节省一轮等待时间：
 
-```python
-"""predictive_execution.py — 预测性工具预取"""
+```typescript
+// predictive_execution.ts — 预测性工具预取
 
-import asyncio
+async function executeTool(toolName: string, toolInput: Record<string, unknown>): Promise<string> {
+  /** 执行工具调用（需根据实际工具注册表实现） */
+  throw new Error(`请实现工具 ${toolName} 的执行逻辑`);
+}
 
-async def execute_tool(tool_name: str, tool_input: dict) -> str:
-    """执行工具调用（需根据实际工具注册表实现）"""
-    raise NotImplementedError(f"请实现工具 {tool_name} 的执行逻辑")
+class PredictiveExecutor {
+  /** 在 LLM 推理的同时，预取可能需要的工具结果 */
 
-class PredictiveExecutor:
-    """在 LLM 推理的同时，预取可能需要的工具结果"""
+  private prefetchCache: Map<string, Promise<string>> = new Map();
 
-    def __init__(self):
-        self.prefetch_cache: dict[str, asyncio.Task] = {}
+  async prefetch(likelyTools: Array<{ name: string; input: Record<string, unknown> }>): Promise<void> {
+    /** 提前发起可能需要的工具调用 */
+    for (const tool of likelyTools) {
+      const cacheKey = `${tool.name}:${JSON.stringify(tool.input)}`;
+      if (!this.prefetchCache.has(cacheKey)) {
+        this.prefetchCache.set(
+          cacheKey,
+          executeTool(tool.name, tool.input)
+        );
+      }
+    }
+  }
 
-    async def prefetch(self, likely_tools: list[dict]):
-        """提前发起可能需要的工具调用"""
-        for tool in likely_tools:
-            cache_key = f"{tool['name']}:{hash(str(tool['input']))}"
-            if cache_key not in self.prefetch_cache:
-                self.prefetch_cache[cache_key] = asyncio.create_task(
-                    execute_tool(tool["name"], tool["input"])
-                )
+  async getOrExecute(toolName: string, toolInput: Record<string, unknown>): Promise<string> {
+    /** 优先从预取缓存获取，否则正常执行 */
+    const cacheKey = `${toolName}:${JSON.stringify(toolInput)}`;
+    if (this.prefetchCache.has(cacheKey)) {
+      const promise = this.prefetchCache.get(cacheKey)!;
+      this.prefetchCache.delete(cacheKey);
+      return promise;
+    }
+    return executeTool(toolName, toolInput);
+  }
 
-    async def get_or_execute(self, tool_name: str, tool_input: dict) -> str:
-        """优先从预取缓存获取，否则正常执行"""
-        cache_key = f"{tool_name}:{hash(str(tool_input))}"
-        if cache_key in self.prefetch_cache:
-            task = self.prefetch_cache.pop(cache_key)
-            return await task
-        return await execute_tool(tool_name, tool_input)
+  clear(): void {
+    /** 清理未使用的预取任务（Promise 无法取消，仅清空引用） */
+    this.prefetchCache.clear();
+  }
+}
 
-    def clear(self):
-        """清理未使用的预取任务"""
-        for task in self.prefetch_cache.values():
-            task.cancel()
-        self.prefetch_cache.clear()
-
-
-# 使用场景：
-# 用户问"今天北京天气怎么样"
-# -> 在 LLM 推理时，预测它大概率会调用 get_weather(city="北京")
-# -> 提前发起天气查询
-# -> LLM 返回 tool_use 时，结果已经准备好了，省去一轮等待
+// 使用场景：
+// 用户问"今天北京天气怎么样"
+// -> 在 LLM 推理时，预测它大概率会调用 get_weather(city="北京")
+// -> 提前发起天气查询
+// -> LLM 返回 tool_use 时，结果已经准备好了，省去一轮等待
 ```
 
 ::: warning 预测性执行的代价

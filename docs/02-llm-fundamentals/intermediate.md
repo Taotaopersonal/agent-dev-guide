@@ -76,18 +76,12 @@ Transformer 处理方式（并行 + 全局关注）:
 2. 相关度越高的书，你越重视它的 **Value**
 3. 最终你得到的信息是所有书 **Value** 的加权组合
 
-```python
-# 注意力的伪代码
-def attention(query, keys, values):
-    # 1. 计算每个 key 与 query 的匹配分数
-    scores = [dot_product(query, key) for key in keys]
+```
+注意力计算流程：
 
-    # 2. 用 softmax 转成权重（和为 1）
-    weights = softmax(scores)
-
-    # 3. 按权重加权求和 values
-    output = sum(weight * value for weight, value in zip(weights, values))
-    return output
+1. 相关度打分：  score_i = dot_product(query, key_i)     -- 每本书和你的问题匹配多少？
+2. 归一化为权重：weights = softmax(scores)                -- 转成概率（和为 1）
+3. 加权取值：    output = sum(weight_i * value_i)          -- 按权重混合所有书的内容
 ```
 
 ### 在句子中的实际效果
@@ -117,39 +111,16 @@ Attention(Q, K, V) = softmax(Q * K^T / sqrt(d_k)) * V
 - `softmax`：把分数转成概率（加和为 1）
 - `* V`：用概率加权 value
 
-```python
-import numpy as np
+下面用一个表格展示这四步是怎样依次执行的：
 
-def attention(Q, K, V):
-    """标准注意力计算"""
-    d_k = K.shape[-1]  # key 的维度
+| 步骤 | 操作 | 矩阵形状变化 | 直觉 |
+|------|------|-------------|------|
+| 1. 匹配打分 | `Q * K^T` | (n, d) x (d, n) -> **(n, n)** | 每个 Query 与每个 Key 做点积，得到 n*n 的分数矩阵 |
+| 2. 缩放 | `/ sqrt(d_k)` | (n, n) -> (n, n) | 除以维度的平方根，防止分数过大导致 softmax 饱和 |
+| 3. 归一化 | `softmax(...)` | (n, n) -> (n, n) | 每一行转成概率分布（和为 1），即"注意力权重" |
+| 4. 加权取值 | `* V` | (n, n) x (n, d) -> **(n, d)** | 用权重对 Value 加权求和，得到最终输出 |
 
-    # 步骤 1: Q 和 K 的点积
-    scores = Q @ K.T
-
-    # 步骤 2: 缩放
-    scores = scores / np.sqrt(d_k)
-
-    # 步骤 3: softmax 转成权重
-    weights = np.exp(scores) / np.exp(scores).sum(axis=-1, keepdims=True)
-
-    # 步骤 4: 加权求和 V
-    output = weights @ V
-
-    return output, weights
-
-# 示例：3 个 Token，每个 4 维
-np.random.seed(42)
-Q = np.random.randn(3, 4)  # 3 个查询
-K = np.random.randn(3, 4)  # 3 个键
-V = np.random.randn(3, 4)  # 3 个值
-
-output, weights = attention(Q, K, V)
-print("注意力权重:")
-print(weights.round(3))
-print("\n输出:")
-print(output.round(3))
-```
+关键观察：第 1 步生成了 **(n, n)** 的矩阵，这就是注意力机制 O(n^2) 复杂度的根源。序列长度从 4K 翻倍到 8K，这个矩阵大小翻 4 倍。
 
 ## 位置编码
 
@@ -159,26 +130,17 @@ Transformer 同时处理所有 Token（不像 RNN 有天然的顺序），所以
 
 **为什么用正弦和余弦？** 原始 Transformer 选择正弦/余弦函数来生成位置编码，背后的直觉是：不同频率的正弦波组合可以唯一标识任意位置——就像钟表用时针、分针、秒针三根不同转速的指针组合来编码时间一样。秒针转得快，区分相邻的秒；时针转得慢，区分不同的小时。位置编码里的不同维度扮演着类似的角色：高频维度区分相邻位置，低频维度捕捉远距离的位置结构。此外，正弦函数的周期性还带来一个好处——任意两个位置之间的相对偏移可以用线性变换表示，这让模型更容易学到"间隔 3 个词"这类相对位置关系。
 
-```python
-import numpy as np
+具体来说，位置编码向量的每个维度是一个不同频率的正弦或余弦值：偶数维度用 sin，奇数维度用 cos。频率从低维到高维指数递减——第 0/1 维变化最快（区分相邻位置），最后几维变化最慢（捕捉全局位置结构）。最终，每个位置得到一个独特的向量"指纹"，加到 Token 嵌入上即可。
 
-def positional_encoding(seq_len: int, d_model: int) -> np.ndarray:
-    """原始 Transformer 的正弦位置编码"""
-    pe = np.zeros((seq_len, d_model))
-    position = np.arange(seq_len)[:, np.newaxis]
-    div_term = np.exp(np.arange(0, d_model, 2) * -(np.log(10000.0) / d_model))
+```
+位置编码的"钟表"类比：
 
-    pe[:, 0::2] = np.sin(position * div_term)  # 偶数维度用 sin
-    pe[:, 1::2] = np.cos(position * div_term)  # 奇数维度用 cos
-
-    return pe
-
-# 生成 10 个位置的编码，每个 64 维
-pe = positional_encoding(10, 64)
-print(f"位置编码形状: {pe.shape}")
-print(f"位置 0 的前 8 维: {pe[0, :8].round(3)}")
-print(f"位置 1 的前 8 维: {pe[1, :8].round(3)}")
-# 不同位置的编码是不同的，模型能据此区分位置
+          秒针(高频维度)    分针(中频维度)    时针(低频维度)
+位置 0:     0.000            0.000            0.000
+位置 1:     0.841            0.010            0.000       -- 秒针变了，分针几乎没动
+位置 2:     0.909            0.020            0.000       -- 秒针继续转，分针微动
+...
+位置 100:   0.506            0.862            0.010       -- 分针转了很多，时针才刚动
 ```
 
 ::: tip 现代模型的位置编码
@@ -197,53 +159,25 @@ print(f"位置 1 的前 8 维: {pe[1, :8].round(3)}")
 ...
 ```
 
-```python
-import numpy as np
+多头注意力的实现思路很直接：把输入向量的维度均分给各个头，每个头独立做一遍注意力计算，最后把结果拼接起来。
 
-def multi_head_attention(Q, K, V, num_heads: int = 4):
-    """多头注意力（简化版）"""
-    d_model = Q.shape[-1]
-    d_k = d_model // num_heads
-
-    outputs = []
-    all_weights = []
-
-    for h in range(num_heads):
-        # 每个头取特征的一个切片
-        start = h * d_k
-        end = start + d_k
-
-        q_h = Q[:, start:end]
-        k_h = K[:, start:end]
-        v_h = V[:, start:end]
-
-        # 单头注意力
-        scores = q_h @ k_h.T / np.sqrt(d_k)
-        weights = np.exp(scores) / np.exp(scores).sum(axis=-1, keepdims=True)
-        output = weights @ v_h
-
-        outputs.append(output)
-        all_weights.append(weights)
-
-    # 拼接所有头的输出
-    concat_output = np.concatenate(outputs, axis=-1)
-
-    print(f"头数: {num_heads}, 每头维度: {d_k}")
-    for i, w in enumerate(all_weights):
-        print(f"  头 {i+1} 注意力权重: {w[0].round(2)}")
-
-    return concat_output
-
-# 示例
-np.random.seed(42)
-seq_len, d_model = 4, 16
-Q = np.random.randn(seq_len, d_model)
-K = np.random.randn(seq_len, d_model)
-V = np.random.randn(seq_len, d_model)
-
-output = multi_head_attention(Q, K, V, num_heads=4)
-print(f"输出形状: {output.shape}")
 ```
+多头注意力流程：
+
+输入 X (seq_len, d_model=16)
+       ↓
+   ┌───┼───┼───┐
+   ↓   ↓   ↓   ↓         -- 维度均分：d_model / num_heads = 16/4 = 4
+  头1  头2  头3  头4       -- 每个头独立做 Q*K->softmax->*V
+   ↓   ↓   ↓   ↓
+   └───┼───┼───┘
+       ↓                   -- 拼接所有头的输出 (seq_len, 4*4=16)
+   线性投影 W_o
+       ↓
+输出 (seq_len, d_model=16)
+```
+
+一个关键的设计：多头不增加总计算量，只是把同样的维度切分给不同的头，让每个头专注于子空间。这也意味着多头在 GPU 上可以完全并行计算。
 
 ## 模型推理和采样策略
 
@@ -253,109 +187,69 @@ print(f"输出形状: {output.shape}")
 
 Temperature 控制概率分布的"锐度"：
 
-```python
-import numpy as np
+| Temperature | 效果 | 概率分布 |
+|---|---|---|
+| **0**（或极低，如 0.1） | 几乎确定选概率最高的 Token | `好: 0.95, 不错: 0.04, 棒: 0.01, ...` |
+| **1.0**（默认） | 使用模型原始的概率分布 | `好: 0.35, 不错: 0.25, 棒: 0.20, ...` |
+| **1.5**（高） | 分布更平均，低概率 Token 也有机会 | `好: 0.25, 不错: 0.22, 棒: 0.20, 差: 0.18, ...` |
 
-def softmax_with_temperature(logits: np.ndarray, temperature: float) -> np.ndarray:
-    """带 temperature 的 softmax"""
-    scaled = logits / temperature
-    exp_scaled = np.exp(scaled - scaled.max())  # 减去最大值防止溢出
-    return exp_scaled / exp_scaled.sum()
+数学上很简单：把原始分数（logits）除以 temperature 再做 softmax。Temperature 越低，softmax 越"尖锐"（赢家通吃）；越高，越"平缓"（雨露均沾）。
 
-# 模拟模型输出的原始分数（logits）
-# 假设词汇表有 5 个 Token: ["好", "不错", "棒", "差", "一般"]
-logits = np.array([2.0, 1.5, 1.8, 0.3, 0.8])
-tokens = ["好", "不错", "棒", "差", "一般"]
+下面用 Anthropic SDK 实际体验不同 temperature 的输出差异：
 
-print("不同 Temperature 下的概率分布:")
-for temp in [0.1, 0.5, 1.0, 1.5]:
-    probs = softmax_with_temperature(logits, temp)
-    print(f"\n  Temperature = {temp}:")
-    for token, prob in zip(tokens, probs):
-        bar = "█" * int(prob * 50)
-        print(f"    {token}: {prob:.3f} {bar}")
+```typescript
+import Anthropic from "@anthropic-ai/sdk";
 
-# Temperature 0.1 -> 几乎确定选"好"（概率最高的那个）
-# Temperature 1.0 -> 各 Token 都有合理概率
-# Temperature 1.5 -> 更平均，"差"和"一般"也有机会被选中
+const client = new Anthropic();
+
+// 同一个创意写作 prompt，用不同 temperature 调用
+const prompt = "用一句话描述月光下的大海";
+
+for (const temperature of [0, 0.5, 1.0]) {
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 100,
+    temperature,
+    messages: [{ role: "user", content: prompt }],
+  });
+
+  console.log(`Temperature ${temperature}:`, response.content[0].text);
+}
+
+// temperature=0: 每次输出几乎一样（确定性）
+// temperature=0.5: 每次略有变化（适度多样）
+// temperature=1.0: 每次差异明显（高多样性）
 ```
 
 ### Top-p（核采样）
 
 Top-p 不是调整概率分布，而是截取概率最高的几个 Token，使它们的累积概率达到 p：
 
-```python
-import numpy as np
-
-def top_p_sampling(probs: np.ndarray, p: float = 0.9) -> np.ndarray:
-    """Top-p 采样"""
-    # 按概率降序排列
-    sorted_indices = np.argsort(-probs)
-    sorted_probs = probs[sorted_indices]
-
-    # 计算累积概率
-    cumulative = np.cumsum(sorted_probs)
-
-    # 找到累积概率超过 p 的位置
-    cutoff_idx = np.searchsorted(cumulative, p) + 1
-
-    # 只保留前 cutoff_idx 个 Token
-    selected_indices = sorted_indices[:cutoff_idx]
-    selected_probs = probs[selected_indices]
-
-    # 重新归一化
-    selected_probs = selected_probs / selected_probs.sum()
-
-    return selected_indices, selected_probs
-
-# 示例
-probs = np.array([0.35, 0.25, 0.20, 0.10, 0.05, 0.03, 0.02])
-tokens = ["好", "不错", "棒", "还行", "一般", "差", "烂"]
-
-print("Top-p = 0.9 采样结果:")
-indices, new_probs = top_p_sampling(probs, p=0.9)
-for idx, prob in zip(indices, new_probs):
-    print(f"  {tokens[idx]}: {prob:.3f}")
-# "差"和"烂"被排除了（累积概率已经到 0.9）
 ```
+Top-p = 0.9 的筛选过程：
+
+原始概率（已按降序排列）：
+  Token:       好     不错    棒     还行    一般    差     烂
+  概率:       0.35   0.25   0.20   0.10   0.05   0.03   0.02
+  累积概率:   0.35   0.60   0.80   0.90   0.95   0.98   1.00
+                                    ↑
+                              累积到 0.90，截断！
+
+保留的候选: [好, 不错, 棒, 还行]  -- 重新归一化后在这 4 个里面采样
+排除的 Token: [一般, 差, 烂]       -- 概率太低，不参与采样
+```
+
+Top-p 的价值在于**动态调整候选集大小**。当模型很确定时（一个 Token 概率 0.95），候选集就只有 1 个；当模型不确定时（概率分散），候选集自动变大。这比固定取 Top-k 个更灵活。
 
 ### 实际建议
 
-```python
-# 不同任务的推荐设置
-
-SETTINGS = {
-    "分类/提取/判断": {
-        "temperature": 0,
-        "top_p": 1.0,
-        "说明": "确定性输出，每次结果一致"
-    },
-    "代码生成": {
-        "temperature": 0,
-        "top_p": 1.0,
-        "说明": "代码需要精确，不要随机"
-    },
-    "日常对话": {
-        "temperature": 0.7,
-        "top_p": 0.9,
-        "说明": "适度多样化，但不离谱"
-    },
-    "创意写作": {
-        "temperature": 0.9,
-        "top_p": 0.95,
-        "说明": "鼓励创新表达"
-    },
-    "头脑风暴": {
-        "temperature": 1.0,
-        "top_p": 0.95,
-        "说明": "最大多样性，生成各种可能"
-    },
-}
-
-for task, config in SETTINGS.items():
-    print(f"{task}: temperature={config['temperature']}, top_p={config['top_p']}")
-    print(f"  {config['说明']}")
-```
+| 任务类型 | Temperature | Top-p | 说明 |
+|---------|-------------|-------|------|
+| 分类/提取/判断 | 0 | 1.0 | 确定性输出，每次结果一致 |
+| 代码生成 | 0 | 1.0 | 代码需要精确，不要随机 |
+| 日常对话 | 0.7 | 0.9 | 适度多样化，但不离谱 |
+| 创意写作 | 0.9 | 0.95 | 鼓励创新表达 |
+| 头脑风暴 | 1.0 | 0.95 | 最大多样性，生成各种可能 |
 
 ::: warning temperature 和 top_p 不要同时调
 通常只调其中一个，另一个保持默认。Anthropic 建议修改 temperature 时保持 top_p=1，反之亦然。同时调两个参数会让效果难以预测。
@@ -371,7 +265,7 @@ for task, config in SETTINGS.items():
 
 ## 练习
 
-1. **注意力可视化**：用上面的 `attention` 函数，构造一个 5 个 Token 的例子，手动设置 Q/K 让第 3 个 Token 强烈关注第 1 个 Token，验证注意力权重。
+1. **注意力权重推演**：手动计算一个 3 个 Token 的注意力例子。假设 Q*K^T 的结果是 `[[2, -1, 0], [1, 3, -2], [0, 1, 2]]`，d_k=4，手算缩放后的 softmax 权重矩阵。观察哪个 Token 最关注哪个 Token。
 
 2. **Temperature 实验**：对同一个创意写作 Prompt，用 temperature 0、0.5、1.0 各调用 3 次 Claude API，记录输出多样性的差异。
 

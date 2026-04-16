@@ -20,110 +20,150 @@
 
 ### 全局限流 + 用户级限流
 
-```python
-"""concurrency.py — 并发请求管理器"""
+```typescript
+// concurrency.ts — 并发请求管理器
 
-import asyncio
+class Semaphore {
+  /** 简单的信号量实现 */
+  private _count: number;
+  private _waitQueue: Array<() => void> = [];
 
-class ConcurrencyManager:
-    """双层并发控制：全局限流 + 每用户限流"""
+  constructor(max: number) {
+    this._count = max;
+  }
 
-    def __init__(
-        self,
-        max_concurrent: int = 50,    # 全局最大并发
-        max_per_user: int = 3,       # 每用户最大并发
-        queue_timeout: float = 60.0, # 排队超时
-    ):
-        self.global_sem = asyncio.Semaphore(max_concurrent)
-        self.user_sems: dict[str, asyncio.Semaphore] = {}
-        self.max_per_user = max_per_user
-        self.queue_timeout = queue_timeout
+  async acquire(): Promise<void> {
+    if (this._count > 0) {
+      this._count--;
+      return;
+    }
+    return new Promise<void>((resolve) => {
+      this._waitQueue.push(resolve);
+    });
+  }
 
-    def _get_user_sem(self, user_id: str) -> asyncio.Semaphore:
-        if user_id not in self.user_sems:
-            self.user_sems[user_id] = asyncio.Semaphore(self.max_per_user)
-        return self.user_sems[user_id]
+  release(): void {
+    const next = this._waitQueue.shift();
+    if (next) {
+      next();
+    } else {
+      this._count++;
+    }
+  }
+}
 
-    async def execute(self, user_id: str, coro):
-        """带并发控制的请求执行"""
-        user_sem = self._get_user_sem(user_id)
+class ConcurrencyManager {
+  /** 双层并发控制：全局限流 + 每用户限流 */
 
-        try:
-            await asyncio.wait_for(
-                self._acquire_both(user_sem),
-                timeout=self.queue_timeout,
-            )
-        except asyncio.TimeoutError:
-            raise Exception("请求排队超时，请稍后重试")
+  private globalSem: Semaphore;
+  private userSems: Map<string, Semaphore> = new Map();
+  private maxPerUser: number;
+  private queueTimeout: number;
 
-        try:
-            return await coro
-        finally:
-            self.global_sem.release()
-            user_sem.release()
+  constructor(
+    maxConcurrent: number = 50,    // 全局最大并发
+    maxPerUser: number = 3,        // 每用户最大并发
+    queueTimeout: number = 60_000, // 排队超时（毫秒）
+  ) {
+    this.globalSem = new Semaphore(maxConcurrent);
+    this.maxPerUser = maxPerUser;
+    this.queueTimeout = queueTimeout;
+  }
 
-    async def _acquire_both(self, user_sem: asyncio.Semaphore):
-        await self.global_sem.acquire()
-        try:
-            await user_sem.acquire()
-        except Exception:
-            self.global_sem.release()
-            raise
+  private _getUserSem(userId: string): Semaphore {
+    if (!this.userSems.has(userId)) {
+      this.userSems.set(userId, new Semaphore(this.maxPerUser));
+    }
+    return this.userSems.get(userId)!;
+  }
+
+  async execute<T>(userId: string, fn: () => Promise<T>): Promise<T> {
+    /** 带并发控制的请求执行 */
+    const userSem = this._getUserSem(userId);
+
+    const acquireBoth = async () => {
+      await this.globalSem.acquire();
+      try {
+        await userSem.acquire();
+      } catch (err) {
+        this.globalSem.release();
+        throw err;
+      }
+    };
+
+    // 排队超时控制
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("请求排队超时，请稍后重试")), this.queueTimeout)
+    );
+    await Promise.race([acquireBoth(), timeout]);
+
+    try {
+      return await fn();
+    } finally {
+      this.globalSem.release();
+      userSem.release();
+    }
+  }
+}
 ```
 
 ### 并行工具执行器
 
-```python
-"""parallel_tools.py — 带并发控制的并行工具执行"""
+```typescript
+// parallel_tools.ts — 带并发控制的并行工具执行
 
-import asyncio
-import time
-from dataclasses import dataclass
+interface ToolCallResult {
+  toolId: string;
+  toolName: string;
+  output: string;
+  success: boolean;
+  durationMs: number;
+}
 
-@dataclass
-class ToolCallResult:
-    tool_id: str
-    tool_name: str
-    output: str
-    success: bool
-    duration_ms: int
+class ParallelToolExecutor {
+  /** 并行执行工具调用，带超时和并发控制 */
 
-class ParallelToolExecutor:
-    """并行执行工具调用，带超时和并发控制"""
+  private semaphore: Semaphore;
+  private timeout: number;
 
-    def __init__(self, max_concurrent: int = 10, timeout: float = 30.0):
-        self.semaphore = asyncio.Semaphore(max_concurrent)
-        self.timeout = timeout
+  constructor(maxConcurrent: number = 10, timeout: number = 30_000) {
+    this.semaphore = new Semaphore(maxConcurrent);
+    this.timeout = timeout;
+  }
 
-    async def execute_all(self, tool_calls: list[dict]) -> list[ToolCallResult]:
-        tasks = [self._execute_single(call) for call in tool_calls]
-        return await asyncio.gather(*tasks)
+  async executeAll(toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>): Promise<ToolCallResult[]> {
+    const tasks = toolCalls.map((call) => this._executeSingle(call));
+    return Promise.all(tasks);
+  }
 
-    async def _execute_single(self, call: dict) -> ToolCallResult:
-        start = time.monotonic()
-        async with self.semaphore:
-            try:
-                result = await asyncio.wait_for(
-                    execute_tool(call["name"], call["input"]),
-                    timeout=self.timeout,
-                )
-                return ToolCallResult(
-                    tool_id=call["id"], tool_name=call["name"],
-                    output=result, success=True,
-                    duration_ms=int((time.monotonic() - start) * 1000),
-                )
-            except asyncio.TimeoutError:
-                return ToolCallResult(
-                    tool_id=call["id"], tool_name=call["name"],
-                    output=f"超时 ({self.timeout}s)", success=False,
-                    duration_ms=int((time.monotonic() - start) * 1000),
-                )
-            except Exception as e:
-                return ToolCallResult(
-                    tool_id=call["id"], tool_name=call["name"],
-                    output=f"错误: {e}", success=False,
-                    duration_ms=int((time.monotonic() - start) * 1000),
-                )
+  private async _executeSingle(call: { id: string; name: string; input: Record<string, unknown> }): Promise<ToolCallResult> {
+    const start = performance.now();
+    await this.semaphore.acquire();
+    try {
+      const result = await Promise.race([
+        executeTool(call.name, call.input),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("超时")), this.timeout)
+        ),
+      ]);
+      return {
+        toolId: call.id, toolName: call.name,
+        output: result, success: true,
+        durationMs: Math.round(performance.now() - start),
+      };
+    } catch (err) {
+      const isTimeout = err instanceof Error && err.message === "超时";
+      return {
+        toolId: call.id, toolName: call.name,
+        output: isTimeout ? `超时 (${this.timeout / 1000}s)` : `错误: ${err}`,
+        success: false,
+        durationMs: Math.round(performance.now() - start),
+      };
+    } finally {
+      this.semaphore.release();
+    }
+  }
+}
 ```
 
 ## Prompt Caching：节省 80% 输入成本
@@ -132,273 +172,297 @@ Agent 的每轮 LLM 调用都要发送 System Prompt 和工具定义，这些内
 
 ### 实现 Prompt Caching
 
-```python
-"""prompt_caching.py — 带缓存的 LLM 客户端"""
+```typescript
+// prompt_caching.ts — 带缓存的 LLM 客户端
 
-import anthropic
+import Anthropic from "@anthropic-ai/sdk";
 
-class CachedLLMClient:
-    """支持 Prompt Caching 的 LLM 客户端"""
+class CachedLLMClient {
+  /** 支持 Prompt Caching 的 LLM 客户端 */
 
-    def __init__(self, model: str = "claude-sonnet-4-20250514"):
-        self.client = anthropic.AsyncAnthropic()
-        self.model = model
-        self._stats = {"hits": 0, "misses": 0, "tokens_saved": 0}
+  private client: Anthropic;
+  private model: string;
+  private _stats = { hits: 0, misses: 0, tokensSaved: 0 };
 
-    async def call(
-        self,
-        system_prompt: str,
-        tools: list[dict],
-        messages: list[dict],
-    ) -> dict:
-        # System Prompt 标记为可缓存
-        cached_system = [{
-            "type": "text",
-            "text": system_prompt,
-            "cache_control": {"type": "ephemeral"},
-        }]
+  constructor(model: string = "claude-sonnet-4-20250514") {
+    this.client = new Anthropic();
+    this.model = model;
+  }
 
-        # 最后一个工具定义标记为可缓存
-        cached_tools = []
-        for i, tool in enumerate(tools):
-            t = dict(tool)
-            if i == len(tools) - 1:
-                t["cache_control"] = {"type": "ephemeral"}
-            cached_tools.append(t)
+  async call(
+    systemPrompt: string,
+    tools: Array<Record<string, unknown>>,
+    messages: Array<{ role: string; content: string }>,
+  ) {
+    // System Prompt 标记为可缓存
+    const cachedSystem = [{
+      type: "text" as const,
+      text: systemPrompt,
+      cache_control: { type: "ephemeral" as const },
+    }];
 
-        response = await self.client.messages.create(
-            model=self.model,
-            max_tokens=4096,
-            system=cached_system,
-            tools=cached_tools,
-            messages=messages,
-        )
+    // 最后一个工具定义标记为可缓存
+    const cachedTools = tools.map((tool, i) => {
+      if (i === tools.length - 1) {
+        return { ...tool, cache_control: { type: "ephemeral" as const } };
+      }
+      return { ...tool };
+    });
 
-        # 追踪缓存命中
-        cache_read = getattr(response.usage, 'cache_read_input_tokens', 0)
-        if cache_read > 0:
-            self._stats["hits"] += 1
-            self._stats["tokens_saved"] += cache_read
-        else:
-            self._stats["misses"] += 1
+    const response = await this.client.messages.create({
+      model: this.model,
+      max_tokens: 4096,
+      system: cachedSystem,
+      tools: cachedTools as Anthropic.Tool[],
+      messages: messages as Anthropic.MessageParam[],
+    });
 
-        return response
+    // 追踪缓存命中
+    const cacheRead = (response.usage as Record<string, number>)
+      .cache_read_input_tokens ?? 0;
+    if (cacheRead > 0) {
+      this._stats.hits += 1;
+      this._stats.tokensSaved += cacheRead;
+    } else {
+      this._stats.misses += 1;
+    }
+
+    return response;
+  }
+}
 ```
 
 ### 缓存节省了多少钱
 
-```python
-"""cache_savings.py — 计算缓存节省的成本"""
+```typescript
+// cache_savings.ts — 计算缓存节省的成本
 
-def calculate_cache_savings(
-    cacheable_tokens: int,       # System Prompt + 工具定义的 token 数
-    requests_per_hour: int,      # 每小时请求数
-    model: str = "claude-sonnet-4-20250514",
-) -> dict:
-    # Sonnet 定价
-    input_price = 3.0 / 1_000_000       # $3 / 1M tokens
-    cache_write_price = 3.75 / 1_000_000 # $3.75 / 1M tokens
-    cache_read_price = 0.3 / 1_000_000   # $0.3 / 1M tokens (仅 input 的 10%)
+function calculateCacheSavings(
+  cacheableTokens: number,      // System Prompt + 工具定义的 token 数
+  requestsPerHour: number,      // 每小时请求数
+  model: string = "claude-sonnet-4-20250514",
+): Record<string, string> {
+  // Sonnet 定价
+  const inputPrice = 3.0 / 1_000_000;        // $3 / 1M tokens
+  const cacheWritePrice = 3.75 / 1_000_000;  // $3.75 / 1M tokens
+  const cacheReadPrice = 0.3 / 1_000_000;    // $0.3 / 1M tokens (仅 input 的 10%)
 
-    # 无缓存成本
-    no_cache = cacheable_tokens * requests_per_hour * input_price
+  // 无缓存成本
+  const noCache = cacheableTokens * requestsPerHour * inputPrice;
 
-    # 有缓存成本：第一次写入 + 后续读取
-    with_cache = (
-        cacheable_tokens * cache_write_price  # 写入一次
-        + cacheable_tokens * (requests_per_hour - 1) * cache_read_price  # 后续读取
-    )
+  // 有缓存成本：第一次写入 + 后续读取
+  const withCache =
+    cacheableTokens * cacheWritePrice +  // 写入一次
+    cacheableTokens * (requestsPerHour - 1) * cacheReadPrice;  // 后续读取
 
-    return {
-        "hourly_without_cache": f"${no_cache:.4f}",
-        "hourly_with_cache": f"${with_cache:.4f}",
-        "savings_pct": f"{(1 - with_cache / no_cache) * 100:.1f}%",
-    }
+  return {
+    hourly_without_cache: `$${noCache.toFixed(4)}`,
+    hourly_with_cache: `$${withCache.toFixed(4)}`,
+    savings_pct: `${((1 - withCache / noCache) * 100).toFixed(1)}%`,
+  };
+}
 
-# 示例：10000 token 的 System Prompt + 工具定义，每小时 100 次请求
-print(calculate_cache_savings(10000, 100))
-# {'hourly_without_cache': '$3.0000',
-#  'hourly_with_cache': '$0.3345',
-#  'savings_pct': '88.9%'}
+// 示例：10000 token 的 System Prompt + 工具定义，每小时 100 次请求
+console.log(calculateCacheSavings(10000, 100));
+// { hourly_without_cache: '$3.0000',
+//   hourly_with_cache: '$0.3345',
+//   savings_pct: '88.9%' }
 ```
 
 ## 工具结果缓存
 
 有些工具的结果短时间内不会变化（如数据库表结构、天气查询），可以缓存避免重复调用：
 
-```python
-"""tool_cache.py — 工具结果缓存"""
+```typescript
+// tool_cache.ts — 工具结果缓存
 
-import hashlib
-import json
-import time
+import { createHash } from "crypto";
 
-class ToolResultCache:
-    """根据工具类型设置不同的缓存时间"""
+class ToolResultCache {
+  /** 根据工具类型设置不同的缓存时间 */
 
-    TOOL_TTL = {
-        "get_weather": 600,          # 天气: 10 分钟
-        "search_documents": 300,      # 文档搜索: 5 分钟
-        "list_tables": 3600,          # 数据库结构: 1 小时
-        "describe_table": 3600,       # 表结构: 1 小时
-        "query_database": 60,         # 数据查询: 1 分钟
+  static TOOL_TTL: Record<string, number> = {
+    get_weather: 600,           // 天气: 10 分钟
+    search_documents: 300,       // 文档搜索: 5 分钟
+    list_tables: 3600,           // 数据库结构: 1 小时
+    describe_table: 3600,        // 表结构: 1 小时
+    query_database: 60,          // 数据查询: 1 分钟
+  };
+
+  private _cache: Map<string, { result: string; timestamp: number }> = new Map();
+  private _hits = 0;
+  private _misses = 0;
+
+  private _makeKey(toolName: string, toolInput: Record<string, unknown>): string {
+    const content = JSON.stringify(
+      { tool: toolName, input: toolInput },
+      Object.keys({ tool: toolName, input: toolInput }).sort()
+    );
+    return createHash("md5").update(content).digest("hex");
+  }
+
+  get(toolName: string, toolInput: Record<string, unknown>): string | null {
+    const key = this._makeKey(toolName, toolInput);
+    const entry = this._cache.get(key);
+    if (entry) {
+      const ttl = ToolResultCache.TOOL_TTL[toolName] ?? 60;
+      if (Date.now() / 1000 - entry.timestamp < ttl) {
+        this._hits += 1;
+        return entry.result;
+      }
+      this._cache.delete(key);
     }
+    this._misses += 1;
+    return null;
+  }
 
-    def __init__(self):
-        self._cache: dict[str, tuple[str, float]] = {}
-        self._hits = 0
-        self._misses = 0
+  set(toolName: string, toolInput: Record<string, unknown>, result: string): void {
+    const key = this._makeKey(toolName, toolInput);
+    this._cache.set(key, { result, timestamp: Date.now() / 1000 });
+  }
 
-    def _make_key(self, tool_name: str, tool_input: dict) -> str:
-        content = json.dumps(
-            {"tool": tool_name, "input": tool_input}, sort_keys=True
-        )
-        return hashlib.md5(content.encode()).hexdigest()
+  get hitRate(): number {
+    const total = this._hits + this._misses;
+    return total > 0 ? this._hits / total : 0.0;
+  }
+}
 
-    def get(self, tool_name: str, tool_input: dict) -> str | None:
-        key = self._make_key(tool_name, tool_input)
-        if key in self._cache:
-            result, timestamp = self._cache[key]
-            ttl = self.TOOL_TTL.get(tool_name, 60)
-            if time.time() - timestamp < ttl:
-                self._hits += 1
-                return result
-            del self._cache[key]
-        self._misses += 1
-        return None
+// 集成到工具执行流程
+const toolCache = new ToolResultCache();
 
-    def set(self, tool_name: str, tool_input: dict, result: str):
-        key = self._make_key(tool_name, tool_input)
-        self._cache[key] = (result, time.time())
+async function cachedToolExecute(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+): Promise<string> {
+  /** 带缓存的工具执行 */
+  const cached = toolCache.get(toolName, toolInput);
+  if (cached !== null) {
+    return cached;
+  }
 
-    @property
-    def hit_rate(self) -> float:
-        total = self._hits + self._misses
-        return self._hits / total if total > 0 else 0.0
-
-# 集成到工具执行流程
-tool_cache = ToolResultCache()
-
-async def cached_tool_execute(tool_name: str, tool_input: dict) -> str:
-    """带缓存的工具执行"""
-    cached = tool_cache.get(tool_name, tool_input)
-    if cached is not None:
-        return cached
-
-    result = await execute_tool(tool_name, tool_input)
-    tool_cache.set(tool_name, tool_input, result)
-    return result
+  const result = await executeTool(toolName, toolInput);
+  toolCache.set(toolName, toolInput, result);
+  return result;
+}
 ```
 
 ## 连接池
 
 复用 HTTP 和数据库连接，避免每次请求都重新建立连接：
 
-```python
-"""connection_pool.py — 连接池管理"""
+```typescript
+// connection_pool.ts — 连接池管理
 
-import httpx
+import { Pool } from "pg";
 
-class ConnectionPool:
-    def __init__(self):
-        self._http: httpx.AsyncClient | None = None
-        self._db = None
+class ConnectionPool {
+  private _db: Pool | null = null;
 
-    async def initialize(self):
-        self._http = httpx.AsyncClient(
-            limits=httpx.Limits(
-                max_connections=100,
-                max_keepalive_connections=20,
-            ),
-            timeout=httpx.Timeout(30.0, connect=5.0),
-        )
+  async initialize(): Promise<void> {
+    this._db = new Pool({
+      connectionString: "postgresql://user:pass@localhost/agent_db",
+      min: 5,
+      max: 20,
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 5_000,
+    });
+  }
 
-        import asyncpg
-        self._db = await asyncpg.create_pool(
-            dsn="postgresql://user:pass@localhost/agent_db",
-            min_size=5, max_size=20,
-        )
+  get db(): Pool {
+    if (!this._db) {
+      throw new Error("数据库连接池未初始化");
+    }
+    return this._db;
+  }
 
-    @property
-    def http(self) -> httpx.AsyncClient:
-        if not self._http:
-            raise RuntimeError("连接池未初始化")
-        return self._http
-
-    @property
-    def db(self):
-        if not self._db:
-            raise RuntimeError("数据库连接池未初始化")
-        return self._db
-
-    async def cleanup(self):
-        if self._http:
-            await self._http.aclose()
-        if self._db:
-            await self._db.close()
+  async cleanup(): Promise<void> {
+    if (this._db) {
+      await this._db.end();
+    }
+  }
+}
 ```
 
 ## 完整的异步 Agent 引擎
 
 把以上所有模块整合在一起：
 
-```python
-"""async_engine.py — 生产级异步 Agent 引擎"""
+```typescript
+// async_engine.ts — 生产级异步 Agent 引擎
 
-import anthropic
-from typing import AsyncIterator
+import Anthropic from "@anthropic-ai/sdk";
 
-class AsyncAgentEngine:
-    """整合并发控制、缓存、连接池的 Agent 引擎"""
+class AsyncAgentEngine {
+  /** 整合并发控制、缓存、连接池的 Agent 引擎 */
 
-    def __init__(self):
-        self.client = anthropic.AsyncAnthropic(max_retries=3)
-        self.tools = ParallelToolExecutor(max_concurrent=10)
-        self.concurrency = ConcurrencyManager(max_concurrent_requests=50)
-        self.tool_cache = ToolResultCache()
-        self.pool = ConnectionPool()
+  private client: Anthropic;
+  private tools: ParallelToolExecutor;
+  private concurrency: ConcurrencyManager;
+  private toolCache: ToolResultCache;
+  private pool: ConnectionPool;
 
-    async def initialize(self):
-        await self.pool.initialize()
+  constructor() {
+    this.client = new Anthropic({ maxRetries: 3 });
+    this.tools = new ParallelToolExecutor(10);
+    this.concurrency = new ConcurrencyManager(50);
+    this.toolCache = new ToolResultCache();
+    this.pool = new ConnectionPool();
+  }
 
-    async def run(self, user_id: str, message: str,
-                  model: str = "claude-sonnet-4-20250514") -> str:
-        return await self.concurrency.execute(
-            user_id,
-            self._agent_loop(message, model),
-        )
+  async initialize(): Promise<void> {
+    await this.pool.initialize();
+  }
 
-    async def _agent_loop(self, message: str, model: str) -> str:
-        messages = [{"role": "user", "content": message}]
+  async run(
+    userId: string,
+    message: string,
+    model: string = "claude-sonnet-4-20250514",
+  ): Promise<string> {
+    return this.concurrency.execute(userId, () =>
+      this._agentLoop(message, model)
+    );
+  }
 
-        for _ in range(25):
-            response = await self.client.messages.create(
-                model=model, max_tokens=4096, messages=messages,
-            )
+  private async _agentLoop(message: string, model: string): Promise<string> {
+    const messages: Anthropic.MessageParam[] = [
+      { role: "user", content: message },
+    ];
 
-            if response.stop_reason != "tool_use":
-                return "".join(
-                    b.text for b in response.content if hasattr(b, "text")
-                )
+    for (let i = 0; i < 25; i++) {
+      const response = await this.client.messages.create({
+        model,
+        max_tokens: 4096,
+        messages,
+      });
 
-            tool_calls = [
-                {"id": b.id, "name": b.name, "input": b.input}
-                for b in response.content if b.type == "tool_use"
-            ]
+      if (response.stop_reason !== "tool_use") {
+        return response.content
+          .filter((b): b is Anthropic.TextBlock => b.type === "text")
+          .map((b) => b.text)
+          .join("");
+      }
 
-            results = await self.tools.execute_all(tool_calls)
+      const toolCalls = response.content
+        .filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use")
+        .map((b) => ({ id: b.id, name: b.name, input: b.input as Record<string, unknown> }));
 
-            messages.append({"role": "assistant", "content": response.content})
-            messages.append({
-                "role": "user",
-                "content": [
-                    {"type": "tool_result", "tool_use_id": r.tool_id,
-                     "content": r.output, "is_error": not r.success}
-                    for r in results
-                ],
-            })
+      const results = await this.tools.executeAll(toolCalls);
 
-        return "达到最大迭代次数。"
+      messages.push({ role: "assistant", content: response.content });
+      messages.push({
+        role: "user",
+        content: results.map((r) => ({
+          type: "tool_result" as const,
+          tool_use_id: r.toolId,
+          content: r.output,
+          is_error: !r.success,
+        })),
+      });
+    }
+
+    return "达到最大迭代次数。";
+  }
+}
 ```
 
 ## 小结
@@ -419,7 +483,7 @@ class AsyncAgentEngine:
 ## 参考资源
 
 - [Anthropic Prompt Caching](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching) -- 缓存文档
-- [Python asyncio 文档](https://docs.python.org/3/library/asyncio.html) -- 异步编程
-- [httpx 文档](https://www.python-httpx.org/) -- 异步 HTTP 客户端
-- [asyncpg 文档](https://magicstack.github.io/asyncpg/) -- 异步 PostgreSQL 客户端
+- [Node.js 文档](https://nodejs.org/docs/latest/api/) -- 异步编程
+- [pg 文档](https://node-postgres.com/) -- PostgreSQL 客户端
+- [ioredis 文档](https://github.com/redis/ioredis) -- Redis 客户端
 - [Redis 官方文档](https://redis.io/docs/) -- 缓存数据库
