@@ -1,0 +1,29 @@
+import{_ as n,o as s,c as t,a2 as p}from"./chunks/framework.CQMe4Urg.js";const g=JSON.parse('{"title":"第 13 章 安全与对齐","description":"","frontmatter":{},"headers":[],"relativePath":"13-security/index.md","filePath":"13-security/index.md","lastUpdated":1776333512000}'),e={name:"13-security/index.md"};function l(d,a,i,r,o,c){return s(),t("div",null,[...a[0]||(a[0]=[p(`<h1 id="第-13-章-安全与对齐" tabindex="-1">第 13 章 安全与对齐 <a class="header-anchor" href="#第-13-章-安全与对齐" aria-label="Permalink to &quot;第 13 章 安全与对齐&quot;">​</a></h1><p>Agent 系统和传统软件有一个根本不同：它的行为不完全由代码决定，而是由 LLM 的输出驱动。这意味着攻击者不需要找到代码漏洞，只要构造一段文字就可能让你的 Agent &quot;叛变&quot;。</p><p>本章从攻击面分析出发，带你建立完整的 Agent 安全防线。我们会从最常见的 Prompt Injection 讲起，理解攻击者如何利用自然语言的模糊性绕过系统指令；然后介绍权限控制、代码沙箱、内容过滤等中间层防御手段；最后深入红队测试、PII 脱敏引擎和隐私合规体系，让你的 Agent 系统能够上线面对真实用户。</p><p>安全不是一个功能，而是贯穿 Agent 开发全过程的思维方式。一个没有安全防护的 Agent，就像一个没有门锁的房子——平时看着没问题，出事就是大事。</p><h2 id="本章结构" tabindex="-1">本章结构 <a class="header-anchor" href="#本章结构" aria-label="Permalink to &quot;本章结构&quot;">​</a></h2><table tabindex="0"><thead><tr><th>层级</th><th>内容</th><th>适合读者</th></tr></thead><tbody><tr><td><a href="./beginner.html">入门篇</a></td><td>Prompt Injection 原理、直接/间接注入、基本防护策略</td><td>刚接触 Agent 安全的开发者</td></tr><tr><td><a href="./intermediate.html">进阶篇</a></td><td>RBAC 权限控制、代码沙箱、内容安全过滤、双 LLM 检测</td><td>准备上线 Agent 服务的工程师</td></tr><tr><td><a href="./advanced.html">高级篇</a></td><td>红队测试方法论、PII 脱敏引擎、隐私合规、审计日志</td><td>负责安全合规的架构师</td></tr></tbody></table><h2 id="核心安全原则" tabindex="-1">核心安全原则 <a class="header-anchor" href="#核心安全原则" aria-label="Permalink to &quot;核心安全原则&quot;">​</a></h2><p><strong>1. 纵深防御（Defense in Depth）</strong></p><p>不依赖任何单一防护层。输入检查挡住 80% 的攻击，System Prompt 加固再挡一部分，权限控制限制影响范围，输出过滤防止敏感信息泄露——每一层都可能被突破，但攻击者必须突破所有层才能得逞。</p><p><strong>2. 最小权限原则（Least Privilege）</strong></p><p>Agent 在任何时刻只拥有完成当前任务所需的最少权限。能读不给写，能查单表不给全库，能访问公开数据不给内部系统。</p><p><strong>3. 默认拒绝（Default Deny）</strong></p><p>没有明确授权的操作，一律拒绝。白名单优于黑名单——与其列出所有不能做的事，不如只列出能做的事。</p><p><strong>4. 可审计性（Auditability）</strong></p><p>所有关键操作（工具调用、数据访问、权限变更）都要有日志。出问题时能快速定位谁、在什么时间、做了什么、影响了哪些数据。</p><h2 id="agent-安全的独特挑战" tabindex="-1">Agent 安全的独特挑战 <a class="header-anchor" href="#agent-安全的独特挑战" aria-label="Permalink to &quot;Agent 安全的独特挑战&quot;">​</a></h2><table tabindex="0"><thead><tr><th>维度</th><th>传统应用安全</th><th>Agent 安全</th></tr></thead><tbody><tr><td>攻击面</td><td>代码漏洞、网络接口</td><td>自然语言输入、外部数据源</td></tr><tr><td>行为可预测性</td><td>高（代码决定行为）</td><td>低（LLM 输出不确定）</td></tr><tr><td>权限管理</td><td>静态权限模型</td><td>动态工具调用权限</td></tr><tr><td>数据风险</td><td>SQL 注入、XSS</td><td>Prompt 注入、知识泄露</td></tr><tr><td>测试方法</td><td>单元测试、渗透测试</td><td>红队测试、对抗评估</td></tr></tbody></table><h2 id="安全防御全景图" tabindex="-1">安全防御全景图 <a class="header-anchor" href="#安全防御全景图" aria-label="Permalink to &quot;安全防御全景图&quot;">​</a></h2><div class="language- vp-adaptive-theme"><button title="Copy Code" class="copy"></button><span class="lang"></span><pre class="shiki shiki-themes github-light github-dark vp-code" tabindex="0"><code><span class="line"><span>用户输入</span></span>
+<span class="line"><span>    │</span></span>
+<span class="line"><span>    ▼</span></span>
+<span class="line"><span>┌──────────────┐</span></span>
+<span class="line"><span>│  输入检查层  │  规则匹配 + LLM 审查（入门篇）</span></span>
+<span class="line"><span>└──────┬───────┘</span></span>
+<span class="line"><span>       │</span></span>
+<span class="line"><span>       ▼</span></span>
+<span class="line"><span>┌──────────────┐</span></span>
+<span class="line"><span>│  权限控制层  │  RBAC + 工具白名单 + 参数校验（进阶篇）</span></span>
+<span class="line"><span>└──────┬───────┘</span></span>
+<span class="line"><span>       │</span></span>
+<span class="line"><span>       ▼</span></span>
+<span class="line"><span>┌──────────────┐</span></span>
+<span class="line"><span>│  执行沙箱层  │  Docker 隔离 + 资源限制（进阶篇）</span></span>
+<span class="line"><span>└──────┬───────┘</span></span>
+<span class="line"><span>       │</span></span>
+<span class="line"><span>       ▼</span></span>
+<span class="line"><span>┌──────────────┐</span></span>
+<span class="line"><span>│  输出过滤层  │  PII 脱敏 + 内容安全（高级篇）</span></span>
+<span class="line"><span>└──────┬───────┘</span></span>
+<span class="line"><span>       │</span></span>
+<span class="line"><span>       ▼</span></span>
+<span class="line"><span>┌──────────────┐</span></span>
+<span class="line"><span>│  审计日志层  │  操作记录 + 异常告警（高级篇）</span></span>
+<span class="line"><span>└──────┬───────┘</span></span>
+<span class="line"><span>       │</span></span>
+<span class="line"><span>       ▼</span></span>
+<span class="line"><span>    安全响应</span></span></code></pre></div><h2 id="你将学到的核心技能" tabindex="-1">你将学到的核心技能 <a class="header-anchor" href="#你将学到的核心技能" aria-label="Permalink to &quot;你将学到的核心技能&quot;">​</a></h2><ul><li><strong>入门篇</strong>：识别 Prompt Injection 攻击，实现输入检查 + System Prompt 加固</li><li><strong>进阶篇</strong>：构建工具权限控制体系，实现代码执行沙箱，部署内容安全过滤</li><li><strong>高级篇</strong>：建立红队测试流程，实现 PII 脱敏引擎，搭建合规审计系统</li></ul><div class="tip custom-block"><p class="custom-block-title">安全是一个持续的过程</p><p>没有任何系统是 100% 安全的。安全工作的目标不是&quot;绝对安全&quot;，而是&quot;让攻击成本高于收益&quot;。每次安全事件都是学习的机会——复盘、修补、加强防线，让系统越来越健壮。</p></div>`,22)])])}const u=n(e,[["render",l]]);export{g as __pageData,u as default};
